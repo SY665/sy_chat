@@ -14,10 +14,10 @@ import MessageList from '@/features/chat/components/MessageList.vue'
 const sidebarCollapsed = ref(false)
 
 const chatStore = useChatStore()
-const {messages,hasMessages} = storeToRefs(chatStore)
+const {messages,hasMessages,isGenerating} = storeToRefs(chatStore)
 
-function handleSend(content: string) {
-  chatStore.addUserMessage(content)
+async function handleSend(content: string) {
+  await chatStore.sendMessage(content)
 }
 </script>
 
@@ -54,12 +54,16 @@ function handleSend(content: string) {
         <MessageList 
           v-else
           :messages="messages"
+          :is-generating="isGenerating"
         />
       </div>
 
       <div class="shrink-0 px-4 pb-4 pt-3">
         <div class="mx-auto w-full max-w-3xl">
-          <ChatInput @send="handleSend" />
+          <ChatInput 
+            :disabled="isGenerating"
+            @send="handleSend" 
+          />
 
           <p class="mt-3 text-center text-xs text-neutral-500">
             SY Chat 可能会生成不准确的信息，请核查重要内容。

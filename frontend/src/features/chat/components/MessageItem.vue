@@ -14,7 +14,7 @@ const isUser = computed(()=> props.message.role === 'user')
 <template>
  <article
     class="flex w-full gap-3"
-    :class="isUser? 'justify-end':'justify-start'""
+    :class="isUser? 'justify-end':'justify-start'"
 >
     <div
         v-if="!isUser"
@@ -24,11 +24,11 @@ const isUser = computed(()=> props.message.role === 'user')
     </div>
 
     <div
-        class="max-w-[80%] whitespace-pre-wrap break-words px-4 py-3 text-sm leading-6"
+        class="max-w-[80%] whitespace-pre-wrap break-words py-3 text-sm leading-6"
         :class="
             isUser
-            ?'rounded-lg bg-neutral-100 dark:bg-neutral-800'
-            :'px-0'
+            ? 'rounded-lg bg-neutral-100 px-4 dark:bg-neutral-800'
+            : 'px-0'
         "
     >
     {{ message.content }}

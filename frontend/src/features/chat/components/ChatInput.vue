@@ -6,13 +6,24 @@ const emit = defineEmits<{
     send: [content: string]
 }>()
 
+const props = withDefaults(
+    defineProps<{disabled?:boolean}>(),
+    {
+        disabled:false
+    }
+)
+
 const content = ref('')
 
 // 标记中文输入法是否正在选字，避免按 Enter 时误发送。
 const isComposing = ref(false)
 
 // 只有输入非空内容时，发送按钮才可用。
-const canSend = computed(() => content.value.trim().length > 0)
+const canSend = computed(() => {
+    return !props.disabled && content.value.trim().length > 0
+})
+
+
 
 function submitMessage() {
     const value = content.value.trim()
@@ -41,7 +52,8 @@ function handleEnter() {
             v-model="content" 
             rows="1"
             class="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-neutral-500"
-            placeholder="给 SY Chat 发送消息" 
+            :disabled="disabled"
+            :placeholder="disabled ? 'SY Chat 正在回复...' : '给 SY Chat 发送消息'"
             @compositionstart="isComposing = true" 
             @compositionend="isComposing = false"
             @keydown.enter.exact.prevent="handleEnter" 

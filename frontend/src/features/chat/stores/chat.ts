@@ -1,10 +1,11 @@
 import { defineStore } from "pinia";
 
-import type { ChatMessage } from "../types";
+import type { ChatMessage,MessageRole } from "../types";
 
 export const useChatStore = defineStore('chat', {
     state: () => ({
         messages: [] as ChatMessage[],
+        isGenerating:false
     }),
 
     getters: {
@@ -12,7 +13,7 @@ export const useChatStore = defineStore('chat', {
     },
 
     actions:{
-        addUserMessage(content:string){
+        addMessage(role: MessageRole,content:string){
             const value = content.trim()
 
             if (!value){
@@ -21,10 +22,35 @@ export const useChatStore = defineStore('chat', {
 
             this.messages.push({
                 id:crypto.randomUUID(),
-                role:'user',
+                role,
                 content:value,
                 createdAt:new Date().toISOString(),
             })
+        },
+
+        async sendMessage(content: string){
+            const value = content.trim()
+
+            if(!value || this.isGenerating){
+                return
+            }
+
+            this.addMessage('user',value)
+            this.isGenerating = true
+
+            try{
+                //模拟数据
+                await new Promise<void>((resolve) =>{
+                    window.setTimeout(resolve,800)
+                })
+
+                this.addMessage(
+                    'assistant',
+                    `我收到了你的消息：“${value}”。这是一条临时回复，之后会由 Go 后端生成。`,
+                )
+            }finally{
+                this.isGenerating = false
+            }
         },
 
         clearMessages(){
