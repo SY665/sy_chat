@@ -1,10 +1,12 @@
 import { defineStore } from "pinia";
+import { getHealth } from "@/lib/api/health";
 
 type Theme = 'light' | 'dark'
 
 export const useAppStore = defineStore('app', {
     state: () => ({
-        theme: 'light' as Theme
+        theme: 'light' as Theme,
+        apiStatus: 'checking' as 'checking' | 'online' | 'offline',
     }),
 
     getters: {
@@ -33,6 +35,22 @@ export const useAppStore = defineStore('app', {
             this.theme = this.isDark ? 'light' : 'dark'
             localStorage.setItem('sy-chat-theme', this.theme)
             this.applyTheme()
-        }
+        },
+
+        async checkApiHealth() {
+            this.apiStatus = 'checking'
+
+            try {
+                const health = await getHealth()
+
+                this.apiStatus =
+                    health.status === 'ok'
+                        ? 'online'
+                        : 'offline'
+            } catch (error) {
+                console.error('API health check failed:', error)
+                this.apiStatus = 'offline'
+            }
+        },
     }
 })

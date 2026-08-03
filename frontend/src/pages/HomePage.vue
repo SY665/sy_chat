@@ -14,7 +14,7 @@ import MessageList from '@/features/chat/components/MessageList.vue'
 const sidebarCollapsed = ref(false)
 
 const chatStore = useChatStore()
-const {messages,hasMessages,isGenerating} = storeToRefs(chatStore)
+const {messages,hasMessages,isGenerating,errorMessage} = storeToRefs(chatStore)
 
 async function handleSend(content: string) {
   await chatStore.sendMessage(content)
@@ -64,6 +64,13 @@ async function handleSend(content: string) {
             :disabled="isGenerating"
             @send="handleSend" 
           />
+
+          <p
+           v-if="errorMessage"
+           class="mt-2 text-sm text-red-600 dark:text-red-400"
+           role="alert">
+            {{ errorMessage }}
+          </p>
 
           <p class="mt-3 text-center text-xs text-neutral-500">
             SY Chat 可能会生成不准确的信息，请核查重要内容。

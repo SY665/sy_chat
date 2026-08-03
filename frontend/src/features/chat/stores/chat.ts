@@ -1,11 +1,22 @@
 import { defineStore } from "pinia";
 
 import type { ChatMessage,MessageRole } from "../types";
+import { ApiRequestError } from "@/lib/api/client";
+import { requestChatReply } from "@/lib/api/chat";
+
+function getErrorMessage(error: unknown): string{
+    if(error instanceof ApiRequestError){
+        return error.message
+    }
+
+    return '发送消息失败，请稍后重试'
+}
 
 export const useChatStore = defineStore('chat', {
     state: () => ({
         messages: [] as ChatMessage[],
-        isGenerating:false
+        isGenerating:false,
+        errorMessage:null as string | null
     }),
 
     getters: {
@@ -36,18 +47,20 @@ export const useChatStore = defineStore('chat', {
             }
 
             this.addMessage('user',value)
+            this.errorMessage = null
             this.isGenerating = true
 
             try{
-                //模拟数据
-                await new Promise<void>((resolve) =>{
-                    window.setTimeout(resolve,800)
-                })
+                //调用后端
+                const response = await requestChatReply(value)
 
-                this.addMessage(
-                    'assistant',
-                    `我收到了你的消息：“${value}”。这是一条临时回复，之后会由 Go 后端生成。`,
-                )
+                if(!response.reply.trim()){
+                    throw new Error('后端返回了空回复')
+                }
+
+                this.addMessage('assistant',response.reply)
+            }catch(error){
+                this.errorMessage = getErrorMessage(error)
             }finally{
                 this.isGenerating = false
             }
@@ -55,6 +68,7 @@ export const useChatStore = defineStore('chat', {
 
         clearMessages(){
             this.messages = []
+            this.errorMessage = null
         }
     }
 })
