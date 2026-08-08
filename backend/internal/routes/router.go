@@ -4,16 +4,21 @@ package routes
 import (
 	"time"
 
-	"github.com/gin-contrib/cors"
-	"github.com/gin-gonic/gin"
-
 	"sy_chat/internal/config"
 	"sy_chat/internal/handlers"
+	"sy_chat/internal/middleware"
+	"sy_chat/internal/repositories"
+	"sy_chat/internal/services/auth"
 	"sy_chat/internal/services/chat"
+	conversationservice "sy_chat/internal/services/conversation"
+
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // RouterInit 创建并配置 Gin 路由。
-func RouterInit(cfg config.Config) *gin.Engine {
+func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 	// 使用 gin.New 可以明确决定启用哪些全局中间件。
 	router := gin.New()
 
@@ -52,11 +57,55 @@ func RouterInit(cfg config.Config) *gin.Engine {
 	chatService := chat.NewService()
 	chatHandler := handlers.NewChatHandler(chatService)
 
+	userRepository := repositories.NewUserRepository(db)
+	authService := auth.NewService(userRepository)
+	tokenManager := auth.NewTokenManager(
+		cfg.JWTSecret,
+		cfg.JWTExpiresIn,
+	)
+	authHandler := handlers.NewAuthHandler(
+		authService,
+		tokenManager,
+		cfg.JWTExpiresIn,
+		cfg.CookieSecure,
+	)
+
+	conversationRepository := repositories.NewConversationRepository(db)
+	conversationService := conversationservice.NewService(
+		conversationRepository,
+	)
+	conversationHandler := handlers.NewConversationHandler(
+		conversationService,
+	)
+
 	// 所有业务接口统一使用 /api/v1 前缀，方便未来升级 API。
 	api := router.Group("/api/v1")
 	{
 		api.GET("/health", handlers.Health)
 		api.POST("/chat", chatHandler.Send)
+
+		authRoutes := api.Group("/auth")
+		{
+			authRoutes.POST("/register", authHandler.Register)
+			authRoutes.POST("/login", authHandler.Login)
+			authRoutes.POST("/logout", authHandler.Logout)
+
+			protectedAuthRoutes := authRoutes.Group("")
+			protectedAuthRoutes.Use(middleware.RequireAuth(tokenManager))
+			{
+				protectedAuthRoutes.GET("/me", authHandler.Me)
+			}
+		}
+
+		conversationRoutes := api.Group("/conversations")
+		conversationRoutes.Use(middleware.RequireAuth(tokenManager))
+		{
+			conversationRoutes.POST("", conversationHandler.Create)
+			conversationRoutes.GET("", conversationHandler.List)
+			conversationRoutes.GET("/:id", conversationHandler.Get)
+			conversationRoutes.PATCH("/:id", conversationHandler.UpdateTitle)
+			conversationRoutes.DELETE("/:id", conversationHandler.Delete)
+		}
 	}
 
 	return router
