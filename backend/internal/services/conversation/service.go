@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	DefaultTitle   = "新对话"
+	DefaultTitle   = models.DefaultConversationTitle
 	MaxTitleLength = 255
 )
 

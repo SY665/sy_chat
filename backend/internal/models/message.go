@@ -7,6 +7,13 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	MessageRoleUser      = "user"
+	MessageRoleAssistant = "assistant"
+	MessageRoleSystem    = "system"
+	MessageRoleTool      = "tool"
+)
+
 type Message struct {
 	ID             string `gorm:"type:char(36);primaryKey"`
 	ConversationID string `gorm:"type:char(36);not null;index:idx_messages_conversation_created,priority:1"`

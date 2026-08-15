@@ -54,7 +54,8 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 		MaxAge: 12 * time.Hour,
 	}))
 
-	chatService := chat.NewService()
+	messageRepository := repositories.NewMessageRepository(db)
+	chatService := chat.NewService(messageRepository)
 	chatHandler := handlers.NewChatHandler(chatService)
 
 	userRepository := repositories.NewUserRepository(db)
@@ -82,7 +83,11 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 	api := router.Group("/api/v1")
 	{
 		api.GET("/health", handlers.Health)
-		api.POST("/chat", chatHandler.Send)
+		api.POST(
+			"/chat",
+			middleware.RequireAuth(tokenManager),
+			chatHandler.Send,
+		)
 
 		authRoutes := api.Group("/auth")
 		{

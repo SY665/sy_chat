@@ -1,26 +1,77 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import {
+    Check,
+    LoaderCircle,
     MessageSquare,
     Moon,
     PanelLeftClose,
     PanelLeftOpen,
+    Pencil,
     Plus,
     Sun,
+    Trash2,
+    X,
 } from '@lucide/vue'
 import { storeToRefs } from 'pinia'
 
+import type { ConversationSummary } from '@/features/conversation/types'
 import { useAppStore } from '@/stores/app'
 
-defineProps<{
+const props = defineProps<{
     collapsed: boolean
+    conversations: ConversationSummary[]
+    activeConversationId?: string
+    isLoading: boolean
+    isCreating: boolean
+    error?: string | null
 }>()
 
 const emit = defineEmits<{
     toggle: []
+    create: []
+    select: [id: string]
+    rename: [id: string, title: string]
+    remove: [id: string]
 }>()
 
 const appStore = useAppStore()
 const { isDark } = storeToRefs(appStore)
+
+const editingID = ref<string | null>(null)
+const editingTitle = ref('')
+
+function startRename(conversation: ConversationSummary) {
+    editingID.value = conversation.id
+    editingTitle.value = conversation.title
+}
+
+function cancelRename() {
+    editingID.value = null
+    editingTitle.value = ''
+}
+
+function submitRename() {
+    const id = editingID.value
+    const title = editingTitle.value.trim()
+
+    if (!id || !title) {
+        return
+    }
+
+    emit('rename', id, title)
+    cancelRename()
+}
+
+function requestRemove(conversation: ConversationSummary) {
+    const confirmed = window.confirm(
+        `确定删除对话“${conversation.title}”吗？`,
+    )
+
+    if (confirmed) {
+        emit('remove', conversation.id)
+    }
+}
 </script>
 
 <template>
@@ -47,9 +98,12 @@ const { isDark } = storeToRefs(appStore)
 
         <div class="p-3">
             <button type="button"
-                class="flex h-10 w-full items-center rounded-md text-sm transition-colors hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                :class="collapsed ? 'justify-center' : 'gap-3 px-3'" title="新对话">
-                <Plus :size="18" />
+                class="flex h-10 w-full items-center rounded-md text-sm transition-colors hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-neutral-800"
+                :class="collapsed ? 'justify-center' : 'gap-3 px-3'" :disabled="isCreating" title="新对话"
+                @click="emit('create')">
+                <LoaderCircle v-if="isCreating" class="h-[18px] w-[18px] animate-spin" />
+                <Plus v-else :size="18" />
+
                 <span v-if="!collapsed">新对话</span>
             </button>
         </div>
@@ -67,10 +121,69 @@ const { isDark } = storeToRefs(appStore)
                 最近
             </p>
 
-            <button type="button"
-                class="w-full truncate rounded-md px-3 py-2 text-left text-sm hover:bg-neutral-200 dark:hover:bg-neutral-800">
-                欢迎使用 SY Chat
-            </button>
+            <div v-if="isLoading" class="flex h-16 items-center justify-center text-neutral-500">
+                <LoaderCircle class="h-4 w-4 animate-spin" />
+            </div>
+
+            <p v-else-if="error" class="px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                {{ error }}
+            </p>
+
+            <p v-else-if="conversations.length === 0" class="px-3 py-2 text-xs text-neutral-500">
+                暂无对话
+            </p>
+
+            <template v-else>
+                <div v-for="conversation in conversations" :key="conversation.id"
+                    class="group mb-0.5 flex min-h-9 items-center rounded-md" :class="conversation.id === activeConversationId
+                            ? 'bg-neutral-200 dark:bg-neutral-800'
+                            : 'hover:bg-neutral-200 dark:hover:bg-neutral-800'
+                        ">
+                    <form v-if="editingID === conversation.id" class="flex min-w-0 flex-1 items-center gap-1 px-1"
+                        @submit.prevent="submitRename">
+                        <input v-model="editingTitle" type="text" maxlength="255" autofocus
+                            class="h-8 min-w-0 flex-1 rounded-md border border-neutral-400 bg-white px-2 text-sm outline-none focus:border-emerald-600 dark:border-neutral-600 dark:bg-neutral-950"
+                            @keydown.esc.prevent="cancelRename" />
+
+                        <button type="submit"
+                            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-emerald-700 hover:bg-neutral-300 dark:text-emerald-400 dark:hover:bg-neutral-700"
+                            title="保存标题" aria-label="保存标题">
+                            <Check :size="15" />
+                        </button>
+
+                        <button type="button"
+                            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-300 dark:hover:bg-neutral-700"
+                            title="取消修改" aria-label="取消修改" @click="cancelRename">
+                            <X :size="15" />
+                        </button>
+                    </form>
+
+                    <template v-else>
+                        <button type="button" class="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm" :class="{
+                            'font-medium': conversation.id === activeConversationId,
+                        }" :title="conversation.title" @click="emit('select', conversation.id)">
+                            {{ conversation.title }}
+                        </button>
+
+                        <div
+                            class="flex shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                            <button type="button"
+                                class="flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-300 hover:text-neutral-950 disabled:opacity-50 dark:hover:bg-neutral-700 dark:hover:text-white"
+                                :disabled="props.isCreating" title="修改标题" aria-label="修改标题"
+                                @click="startRename(conversation)">
+                                <Pencil :size="14" />
+                            </button>
+
+                            <button type="button"
+                                class="flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 hover:bg-red-100 hover:text-red-700 disabled:opacity-50 dark:hover:bg-red-950 dark:hover:text-red-400"
+                                :disabled="props.isCreating" title="删除对话" aria-label="删除对话"
+                                @click="requestRemove(conversation)">
+                                <Trash2 :size="14" />
+                            </button>
+                        </div>
+                    </template>
+                </div>
+            </template>
         </div>
 
         <div class="mt-auto border-t border-neutral-200 p-3 dark:border-neutral-800">

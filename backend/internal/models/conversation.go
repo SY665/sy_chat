@@ -6,6 +6,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const DefaultConversationTitle = "新对话"
+
 type Conversation struct {
 	ID     string `gorm:"type:char(36);primaryKey"`
 	Title  string `gorm:"type:varchar(255);not null;default:新对话"`
