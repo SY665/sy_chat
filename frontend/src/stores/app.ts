@@ -1,12 +1,45 @@
 import { defineStore } from "pinia";
 import { getHealth } from "@/lib/api/health";
 
-type Theme = 'light' | 'dark'
+export type ThemePreference = 'light' | 'dark' | 'system'
+type ResolvedTheme = 'light' | 'dark'
+
+const themeStorageKey = 'sy-chat-theme'
+
+const sidebarStorageKey = 'sy-chat-sidebar-collapsed'
+
+function readThemePreference(): ThemePreference {
+    try {
+        const savedTheme = window.localStorage.getItem(themeStorageKey)
+
+        if (
+            savedTheme === 'light'
+            || savedTheme === 'dark'
+            || savedTheme === 'system'
+        ) {
+            return savedTheme
+        }
+    } catch {
+        // 本地存储不可用时使用默认设置。
+    }
+
+    return 'system'
+}
+
+function readSidebarCollapsed(): boolean {
+    try {
+        return window.localStorage.getItem(sidebarStorageKey) === 'true'
+    } catch {
+        return false
+    }
+}
 
 export const useAppStore = defineStore('app', {
     state: () => ({
-        theme: 'light' as Theme,
+        themePreference: readThemePreference(),
+        theme: 'light' as ResolvedTheme,
         apiStatus: 'checking' as 'checking' | 'online' | 'offline',
+        sidebarCollapsed: readSidebarCollapsed(),
     }),
 
     getters: {
@@ -14,27 +47,60 @@ export const useAppStore = defineStore('app', {
     },
 
     actions: {
-        initializeTheme() {
-            const savedTheme = localStorage.getItem('sy-chat-theme')
+        toggleSidebar() {
+            this.sidebarCollapsed = !this.sidebarCollapsed
 
-            if (savedTheme === 'light' || savedTheme === 'dark') {
-                this.theme = savedTheme
-            } else {
-                this.theme = window.matchMedia('(prefers-color-scheme: dark)').matches
-                    ? 'dark'
-                    : 'light'
+            try {
+                window.localStorage.setItem(
+                    sidebarStorageKey,
+                    String(this.sidebarCollapsed),
+                )
+            } catch {
+                // 存储不可用时，当前页面内仍然可以正常切换。
             }
+        },
+
+        initializeTheme() {
             this.applyTheme()
+
+            const systemTheme = window.matchMedia('(prefers-color-scheme: dark)')
+            systemTheme.addEventListener('change', () => {
+                if (this.themePreference === 'system') {
+                    this.applyTheme()
+                }
+            })
         },
 
         applyTheme() {
-            document.documentElement.classList.toggle('dark', this.isDark)
+            const systemPrefersDark = window.matchMedia(
+                '(prefers-color-scheme: dark)',
+            ).matches
+
+            const shouldUseDark =
+                this.themePreference === 'dark'
+                || (
+                    this.themePreference === 'system'
+                    && systemPrefersDark
+                )
+
+            this.theme = shouldUseDark ? 'dark' : 'light'
+            document.documentElement.classList.toggle('dark', shouldUseDark)
+        },
+        setThemePreference(preference: ThemePreference) {
+            this.themePreference = preference
+
+            try {
+                window.localStorage.setItem(themeStorageKey, preference)
+            } catch {
+                // 存储失败不影响当前页面切换主题。
+            }
+
+            this.applyTheme()
         },
 
+
         toggleTheme() {
-            this.theme = this.isDark ? 'light' : 'dark'
-            localStorage.setItem('sy-chat-theme', this.theme)
-            this.applyTheme()
+            this.setThemePreference(this.isDark ? 'light' : 'dark')
         },
 
         async checkApiHealth() {

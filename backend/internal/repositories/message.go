@@ -82,31 +82,53 @@ func (repository *MessageRepository) CreateExchange(
 	return nil
 }
 
-// ListByConversation 查询对话消息，并再次校验对话所属用户。
-func (repository *MessageRepository) ListByConversation(
+// ListRecentByConversation 查询当前用户对话中的最近消息。
+//
+// 查询前先校验对话归属，避免非法对话 ID 触发外部 AI 调用。
+func (repository *MessageRepository) ListRecentByConversation(
 	ctx context.Context,
 	conversationID string,
 	userID string,
+	limit int,
 ) ([]models.Message, error) {
+	db := repository.db.WithContext(ctx)
+	var conversation models.Conversation
+
+	if err := db.
+		Select("id").
+		Where("id = ? AND user_id = ?", conversationID, userID).
+		First(&conversation).
+		Error; err != nil {
+		return nil, fmt.Errorf(
+			"find conversation for message context: %w",
+			err,
+		)
+	}
+
+	if limit <= 0 {
+		return []models.Message{}, nil
+	}
+
 	var messages []models.Message
 
-	err := repository.db.
-		WithContext(ctx).
-		Model(&models.Message{}).
-		Joins(
-			"JOIN conversations ON conversations.id = messages.conversation_id",
-		).
-		Where(
-			"messages.conversation_id = ? AND conversations.user_id = ?",
-			conversationID,
-			userID,
-		).
-		Order("messages.created_at ASC").
+	// 先倒序取最近的 N 条，避免长对话把全部历史发送给模型。
+	if err := db.
+		Where("conversation_id = ?", conversation.ID).
+		Order("created_at DESC").
+		Limit(limit).
 		Find(&messages).
-		Error
+		Error; err != nil {
+		return nil, fmt.Errorf(
+			"list recent conversation messages: %w",
+			err,
+		)
+	}
 
-	if err != nil {
-		return nil, fmt.Errorf("list conversation messages: %w", err)
+	// AI 上下文需要按照真实对话顺序排列。
+	for left, right := 0, len(messages)-1; left < right; left, right =
+		left+1, right-1 {
+		messages[left], messages[right] =
+			messages[right], messages[left]
 	}
 
 	return messages, nil

@@ -23,6 +23,11 @@ type updateConversationTitleRequest struct {
 	Title string `json:"title" binding:"required"`
 }
 
+type updateConversationPinnedRequest struct {
+	// 使用指针区分 false 和请求中没有传入 isPinned。
+	IsPinned *bool `json:"isPinned" binding:"required"`
+}
+
 type conversationMessageData struct {
 	ID        string    `json:"id"`
 	Role      string    `json:"role"`
@@ -205,6 +210,42 @@ func (handler *ConversationHandler) UpdateTitle(c *gin.Context) {
 	response.JSON(c, http.StatusOK, gin.H{
 		"id":    c.Param("id"),
 		"title": strings.TrimSpace(request.Title),
+	})
+}
+
+// UpdatePinned 修改当前用户对话的置顶状态。
+func (handler *ConversationHandler) UpdatePinned(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录")
+		return
+	}
+
+	var request updateConversationPinnedRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		response.Error(
+			c,
+			http.StatusBadRequest,
+			"INVALID_PINNED_STATE",
+			"请提供正确的置顶状态",
+		)
+		return
+	}
+
+	err := handler.conversationService.UpdatePinned(
+		c.Request.Context(),
+		c.Param("id"),
+		userID,
+		*request.IsPinned,
+	)
+	if err != nil {
+		handler.handleError(c, err)
+		return
+	}
+
+	response.JSON(c, http.StatusOK, gin.H{
+		"id":       c.Param("id"),
+		"isPinned": *request.IsPinned,
 	})
 }
 

@@ -4,6 +4,7 @@ import type {
   ConversationSummary,
   DeleteConversationData,
   UpdateConversationData,
+  UpdateConversationPinnedData,
 } from '@/features/conversation/types'
 
 import { apiRequest } from './client'
@@ -38,6 +39,19 @@ export function updateConversationTitle(
     {
       method: 'PATCH',
       body: JSON.stringify({ title }),
+    },
+  )
+}
+
+export function updateConversationPinned(
+  id: string,
+  isPinned: boolean,
+): Promise<UpdateConversationPinnedData> {
+  return apiRequest<UpdateConversationPinnedData>(
+    `/conversations/${encodeURIComponent(id)}/pin`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ isPinned }),
     },
   )
 }

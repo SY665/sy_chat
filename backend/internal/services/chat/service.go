@@ -6,17 +6,23 @@ import (
 	"fmt"
 	"strings"
 	"sy_chat/internal/models"
+	"sy_chat/internal/services/ai"
 	"time"
 	"unicode/utf8"
 )
 
-const MaxMessageLength = 20000
+const (
+	MaxMessageLength   = 20000
+	maxHistoryMessages = 8
+)
 
 var (
 	ErrUserIDRequired         = errors.New("user ID is required")
 	ErrConversationIDRequired = errors.New("conversation ID is required")
 	ErrMessageRequired        = errors.New("message is required")
 	ErrMessageTooLong         = errors.New("message is too long")
+	ErrStreamingNotSupported  = errors.New("AI provider does not support streaming")
+	ErrModelUnavailable       = errors.New("requested model is unavailable")
 )
 
 // Repository 描述聊天业务需要的消息数据库操作。
@@ -28,12 +34,20 @@ type Repository interface {
 		userMessage *models.Message,
 		assistantMessage *models.Message,
 	) error
+
+	ListRecentByConversation(
+		ctx context.Context,
+		conversationID string,
+		userID string,
+		limit int,
+	) ([]models.Message, error)
 }
 
 type SendInput struct {
 	UserID         string
 	ConversationID string
 	Content        string
+	ModelID        string
 }
 
 type Exchange struct {
@@ -42,12 +56,31 @@ type Exchange struct {
 }
 
 type Service struct {
-	repository Repository
+	repository        Repository
+	provider          ai.Provider
+	defaultModelID    string
+	availableModelIDs map[string]struct{}
 }
 
-func NewService(repository Repository) *Service {
+func NewService(
+	repository Repository,
+	provider ai.Provider,
+	defaultModelID string,
+	availableModelIDs []string,
+) *Service {
+	availableModels := make(map[string]struct{}, len(availableModelIDs)+1)
+	for _, modelID := range availableModelIDs {
+		availableModels[modelID] = struct{}{}
+	}
+
+	// 即使配置列表有误，也保证后端默认模型可以使用。
+	availableModels[defaultModelID] = struct{}{}
+
 	return &Service{
-		repository: repository,
+		repository:        repository,
+		provider:          provider,
+		defaultModelID:    defaultModelID,
+		availableModelIDs: availableModels,
 	}
 }
 
@@ -75,7 +108,42 @@ func (service *Service) Send(
 		return nil, ErrMessageTooLong
 	}
 
-	reply := service.GenerateReply(content)
+	// 未指定模型时使用后端默认值，指定值必须在可用范围内。
+	modelID, err := service.resolveModelID(input.ModelID)
+	if err != nil {
+		return nil, err
+	}
+
+	history, err := service.repository.ListRecentByConversation(
+		ctx,
+		conversationID,
+		userID,
+		maxHistoryMessages,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"load conversation context: %w",
+			err,
+		)
+	}
+
+	contextMessages := buildContextMessages(history, content)
+
+	aiResponse, err := service.provider.Generate(
+		ctx,
+		ai.GenerateRequest{
+			Model:    modelID,
+			Messages: contextMessages,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("generate AI reply: %w", err)
+	}
+
+	reply := strings.TrimSpace(aiResponse.Content)
+	if reply == "" {
+		return nil, ai.ErrEmptyAIResponse
+	}
 	now := time.Now()
 
 	userMessage := &models.Message{
@@ -110,6 +178,169 @@ func (service *Service) Send(
 	}, nil
 }
 
+// Stream 逐段返回 AI 内容，并在生成完成后保存完整的一轮对话。
+func (service *Service) Stream(
+	ctx context.Context,
+	input SendInput,
+	onChunk ai.StreamHandler,
+) (*Exchange, error) {
+	if onChunk == nil {
+		return nil, ai.ErrStreamHandlerRequired
+	}
+
+	userID := strings.TrimSpace(input.UserID)
+	if userID == "" {
+		return nil, ErrUserIDRequired
+	}
+
+	conversationID := strings.TrimSpace(input.ConversationID)
+	if conversationID == "" {
+		return nil, ErrConversationIDRequired
+	}
+
+	content := strings.TrimSpace(input.Content)
+	if content == "" {
+		return nil, ErrMessageRequired
+	}
+
+	if utf8.RuneCountInString(content) > MaxMessageLength {
+		return nil, ErrMessageTooLong
+	}
+
+	// 未指定模型时使用后端默认值，指定值必须在可用范围内。
+	modelID, err := service.resolveModelID(input.ModelID)
+	if err != nil {
+		return nil, err
+	}
+
+	history, err := service.repository.ListRecentByConversation(
+		ctx,
+		conversationID,
+		userID,
+		maxHistoryMessages,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"load conversation context: %w",
+			err,
+		)
+	}
+
+	streamingProvider, ok := service.provider.(ai.StreamingProvider)
+	if !ok {
+		return nil, ErrStreamingNotSupported
+	}
+
+	contextMessages := buildContextMessages(history, content)
+	var replyBuilder strings.Builder
+
+	err = streamingProvider.Stream(
+		ctx,
+		ai.GenerateRequest{
+			Model:    modelID,
+			Messages: contextMessages,
+		},
+		func(chunk string) error {
+			if chunk == "" {
+				return nil
+			}
+
+			// 同时收集完整内容，用于流式结束后的数据库持久化。
+			replyBuilder.WriteString(chunk)
+
+			return onChunk(chunk)
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("stream AI reply: %w", err)
+	}
+
+	reply := strings.TrimSpace(replyBuilder.String())
+	if reply == "" {
+		return nil, ai.ErrEmptyAIResponse
+	}
+
+	now := time.Now()
+
+	userMessage := &models.Message{
+		ConversationID: conversationID,
+		Role:           models.MessageRoleUser,
+		Content:        content,
+		CreatedAt:      now,
+	}
+
+	assistantMessage := &models.Message{
+		ConversationID: conversationID,
+		Role:           models.MessageRoleAssistant,
+		Content:        reply,
+		CreatedAt:      now.Add(time.Millisecond),
+	}
+
+	if err := service.repository.CreateExchange(
+		ctx,
+		userID,
+		createConversationTitle(content),
+		userMessage,
+		assistantMessage,
+	); err != nil {
+		return nil, fmt.Errorf(
+			"save streamed chat exchange: %w",
+			err,
+		)
+	}
+
+	return &Exchange{
+		UserMessage:      userMessage,
+		AssistantMessage: assistantMessage,
+	}, nil
+}
+
+// resolveModelID 统一处理普通请求与流式请求的模型选择。
+func (service *Service) resolveModelID(requestedModelID string) (string, error) {
+	modelID := strings.TrimSpace(requestedModelID)
+	if modelID == "" {
+		modelID = service.defaultModelID
+	}
+
+	if _, exists := service.availableModelIDs[modelID]; !exists {
+		return "", ErrModelUnavailable
+	}
+
+	return modelID, nil
+}
+
+// buildContextMessages 将数据库模型转换为 AI Provider 使用的消息格式。
+// 工具消息暂未接入，因此这里只传递模型当前能够理解的角色。
+func buildContextMessages(
+	history []models.Message,
+	currentContent string,
+) []ai.Message {
+	messages := make(
+		[]ai.Message,
+		0,
+		len(history)+1,
+	)
+
+	for _, message := range history {
+		switch message.Role {
+		case models.MessageRoleUser,
+			models.MessageRoleAssistant,
+			models.MessageRoleSystem:
+			messages = append(messages, ai.Message{
+				Role:    message.Role,
+				Content: message.Content,
+			})
+		}
+	}
+
+	messages = append(messages, ai.Message{
+		Role:    models.MessageRoleUser,
+		Content: currentContent,
+	})
+
+	return messages
+}
+
 // createConversationTitle 使用第一条消息生成简短标题。
 func createConversationTitle(content string) string {
 	const maxTitleLength = 30
@@ -123,12 +354,4 @@ func createConversationTitle(content string) string {
 	}
 
 	return string(characters[:maxTitleLength]) + "…"
-}
-
-// 生成回复
-func (*Service) GenerateReply(message string) string {
-	return fmt.Sprintf(
-		"我收到了你的消息：“%s”。这条回复来自 Go 后端。",
-		message,
-	)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sy_chat/internal/models"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -97,22 +98,123 @@ func (repository *ConversationRepository) UpdateTitle(
 	return nil
 }
 
-// Delete 删除属于指定用户的对话。
+func (repository *ConversationRepository) UpdatePinned(
+	ctx context.Context,
+	id string,
+	userID string,
+	isPinned bool,
+	pinnedAt *time.Time,
+) error {
+	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var conversation models.Conversation
+
+		// 先确认会话存在且属于当前用户，避免把“状态未变化”误判为记录不存在。
+		if err := tx.
+			Select("id").
+			Where("id = ? AND user_id = ?", id, userID).
+			First(&conversation).Error; err != nil {
+			return fmt.Errorf("find conversation before pin update: %w", err)
+		}
+
+		if err := tx.Model(&conversation).Updates(map[string]any{
+			"is_pinned": isPinned,
+			"pinned_at": pinnedAt,
+		}).Error; err != nil {
+			return fmt.Errorf("update conversation pin fields: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("update conversation pinned state: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateSharing 更新会话分享状态，并校验会话归属。
+func (repository *ConversationRepository) UpdateSharing(
+	ctx context.Context,
+	id string,
+	userID string,
+	shareToken *string,
+	isShared bool,
+	sharedAt *time.Time,
+) error {
+	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var conversation models.Conversation
+
+		if err := tx.
+			Select("id").
+			Where("id = ? AND user_id = ?", id, userID).
+			First(&conversation).Error; err != nil {
+			return fmt.Errorf("find conversation before sharing update: %w", err)
+		}
+
+		if err := tx.Model(&conversation).Updates(map[string]any{
+			"share_token": shareToken,
+			"is_shared":   isShared,
+			"shared_at":   sharedAt,
+		}).Error; err != nil {
+			return fmt.Errorf("update conversation sharing fields: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("update conversation sharing state: %w", err)
+	}
+
+	return nil
+}
+
+// Delete 在事务中删除属于指定用户的对话及其全部消息。
 func (repository *ConversationRepository) Delete(
 	ctx context.Context,
 	id string,
 	userID string,
 ) error {
-	result := repository.db.
-		WithContext(ctx).
-		Where("id = ? AND user_id = ?", id, userID).
-		Delete(&models.Conversation{})
-	if result.Error != nil {
-		return fmt.Errorf("delete conversation: %w", result.Error)
+	err := repository.db.WithContext(ctx).Transaction(
+		func(transaction *gorm.DB) error {
+			var conversation models.Conversation
+
+			// 删除消息前先校验对话归属，避免操作其他用户的数据。
+			if err := transaction.
+				Select("id").
+				Where("id = ? AND user_id = ?", id, userID).
+				First(&conversation).
+				Error; err != nil {
+				return fmt.Errorf(
+					"find conversation before delete: %w",
+					err,
+				)
+			}
+
+			if err := transaction.
+				Where("conversation_id = ?", conversation.ID).
+				Delete(&models.Message{}).
+				Error; err != nil {
+				return fmt.Errorf(
+					"delete conversation messages: %w",
+					err,
+				)
+			}
+
+			if err := transaction.
+				Delete(&conversation).
+				Error; err != nil {
+				return fmt.Errorf(
+					"delete conversation: %w",
+					err,
+				)
+			}
+
+			return nil
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("delete conversation transaction: %w", err)
 	}
 
-	if result.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
 	return nil
 }

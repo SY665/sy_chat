@@ -8,6 +8,7 @@ import (
 	"sy_chat/internal/handlers"
 	"sy_chat/internal/middleware"
 	"sy_chat/internal/repositories"
+	aiservice "sy_chat/internal/services/ai"
 	"sy_chat/internal/services/auth"
 	"sy_chat/internal/services/chat"
 	conversationservice "sy_chat/internal/services/conversation"
@@ -55,8 +56,29 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 	}))
 
 	messageRepository := repositories.NewMessageRepository(db)
-	chatService := chat.NewService(messageRepository)
+	aiProvider := newAIProvider(cfg)
+
+	defaultModelID := cfg.SiliconFlowModel
+	availableModelIDs := cfg.SiliconFlowModels
+
+	if cfg.AIProvider == "local" {
+		defaultModelID = "local"
+		availableModelIDs = []string{"local"}
+	}
+
+	chatService := chat.NewService(
+		messageRepository,
+		aiProvider,
+		defaultModelID,
+		availableModelIDs,
+	)
 	chatHandler := handlers.NewChatHandler(chatService)
+
+	modelHandler := handlers.NewModelHandler(
+		cfg.AIProvider,
+		availableModelIDs,
+		defaultModelID,
+	)
 
 	userRepository := repositories.NewUserRepository(db)
 	authService := auth.NewService(userRepository)
@@ -82,11 +104,22 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 	// 所有业务接口统一使用 /api/v1 前缀，方便未来升级 API。
 	api := router.Group("/api/v1")
 	{
+		api.GET(
+			"/models",
+			middleware.RequireAuth(tokenManager),
+			modelHandler.List,
+		)
 		api.GET("/health", handlers.Health)
 		api.POST(
 			"/chat",
 			middleware.RequireAuth(tokenManager),
 			chatHandler.Send,
+		)
+
+		api.POST(
+			"/chat/stream",
+			middleware.RequireAuth(tokenManager),
+			chatHandler.Stream,
 		)
 
 		authRoutes := api.Group("/auth")
@@ -109,9 +142,25 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 			conversationRoutes.GET("", conversationHandler.List)
 			conversationRoutes.GET("/:id", conversationHandler.Get)
 			conversationRoutes.PATCH("/:id", conversationHandler.UpdateTitle)
+			conversationRoutes.PATCH("/:id/pin", conversationHandler.UpdatePinned)
 			conversationRoutes.DELETE("/:id", conversationHandler.Delete)
 		}
 	}
 
 	return router
+}
+
+// newAIProvider 是应用的 AI 依赖装配点。
+// Provider 的选择只由启动配置决定，业务层不读取环境变量。
+func newAIProvider(cfg config.Config) aiservice.Provider {
+	if cfg.AIProvider == "siliconflow" {
+		return aiservice.NewSiliconFlowProvider(
+			cfg.SiliconFlowAPIKey,
+			cfg.SiliconFlowBaseURL,
+			cfg.SiliconFlowModel,
+			cfg.AIRequestTimeout,
+		)
+	}
+
+	return aiservice.NewLocalProvider()
 }

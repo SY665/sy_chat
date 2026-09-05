@@ -14,7 +14,7 @@ type Conversation struct {
 	UserID string `gorm:"type:char(36);not null;index:idx_conversations_user_updated,priority:1;index:idx_conversations_user_pinned,priority:1"`
 
 	User     User      `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-	Messages []Message `gorm:"foreignKey:ConversationID"`
+	Messages []Message `gorm:"foreignKey:ConversationID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
 	CreatedAt time.Time `gorm:"not null"`
 	UpdatedAt time.Time `gorm:"not null;index:idx_conversations_user_updated,priority:2,sort:desc"`

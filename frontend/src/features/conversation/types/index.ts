@@ -33,6 +33,11 @@ export interface UpdateConversationData {
   title: string
 }
 
+export interface UpdateConversationPinnedData {
+  id: string
+  isPinned: boolean
+}
+
 export interface DeleteConversationData {
   id: string
   message: string

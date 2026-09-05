@@ -16,7 +16,7 @@ type User struct {
 	Image         *string        `gorm:"type:text"`
 	APIKey        *string        `json:"-" gorm:"type:varchar(255)"`
 	CreatedAt     time.Time      `gorm:"not null"`
-	Conversations []Conversation `gorm:"foreignKey:UserID"`
+	Conversations []Conversation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 }
 
 // BeforeCreate 在写入数据库前自动补充主键。

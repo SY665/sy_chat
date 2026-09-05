@@ -2,10 +2,13 @@ package conversation
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"sy_chat/internal/models"
+	"time"
 	"unicode/utf8"
 )
 
@@ -46,11 +49,33 @@ type Repository interface {
 		title string,
 	) error
 
+	UpdatePinned(
+		ctx context.Context,
+		id string,
+		userID string,
+		isPinned bool,
+		pinnedAt *time.Time,
+	) error
+
+	UpdateSharing(
+		ctx context.Context,
+		id string,
+		userID string,
+		shareToken *string,
+		isShared bool,
+		sharedAt *time.Time,
+	) error
+
 	Delete(
 		ctx context.Context,
 		id string,
 		userID string,
 	) error
+}
+
+type ShareResult struct {
+	Token    string
+	SharedAt time.Time
 }
 
 type Service struct {
@@ -169,6 +194,111 @@ func (service *Service) UpdateTitle(
 	return nil
 }
 
+// UpdatePinned 更新对话的置顶状态。
+func (service *Service) UpdatePinned(
+	ctx context.Context,
+	id string,
+	userID string,
+	isPinned bool,
+) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrConversationIDRequired
+	}
+
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return ErrUserIDRequired
+	}
+
+	var pinnedAt *time.Time
+	if isPinned {
+		now := time.Now()
+		pinnedAt = &now
+	}
+
+	if err := service.repository.UpdatePinned(
+		ctx,
+		id,
+		userID,
+		isPinned,
+		pinnedAt,
+	); err != nil {
+		return fmt.Errorf("update conversation pinned state: %w", err)
+	}
+
+	return nil
+}
+
+// Share 为属于当前用户的会话生成公开分享令牌。
+func (service *Service) Share(
+	ctx context.Context,
+	id string,
+	userID string,
+) (*ShareResult, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, ErrConversationIDRequired
+	}
+
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, ErrUserIDRequired
+	}
+
+	token, err := newShareToken()
+	if err != nil {
+		return nil, fmt.Errorf("generate share token: %w", err)
+	}
+
+	sharedAt := time.Now()
+	if err := service.repository.UpdateSharing(
+		ctx,
+		id,
+		userID,
+		&token,
+		true,
+		&sharedAt,
+	); err != nil {
+		return nil, fmt.Errorf("share conversation: %w", err)
+	}
+
+	return &ShareResult{
+		Token:    token,
+		SharedAt: sharedAt,
+	}, nil
+}
+
+// Unshare 关闭公开分享，并使旧令牌永久失效。
+func (service *Service) Unshare(
+	ctx context.Context,
+	id string,
+	userID string,
+) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrConversationIDRequired
+	}
+
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return ErrUserIDRequired
+	}
+
+	if err := service.repository.UpdateSharing(
+		ctx,
+		id,
+		userID,
+		nil,
+		false,
+		nil,
+	); err != nil {
+		return fmt.Errorf("unshare conversation: %w", err)
+	}
+
+	return nil
+}
+
 // Delete 删除指定用户的对话。
 func (service *Service) Delete(
 	ctx context.Context,
@@ -190,4 +320,15 @@ func (service *Service) Delete(
 	}
 
 	return nil
+}
+
+func newShareToken() (string, error) {
+	const tokenBytes = 16
+
+	value := make([]byte, tokenBytes)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("read secure random bytes: %w", err)
+	}
+
+	return hex.EncodeToString(value), nil
 }

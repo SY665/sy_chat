@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue';
+import { nextTick, ref, watch,computed } from 'vue';
 
 import MessageItem from './MessageItem.vue';
 import type { ChatMessage } from '../types';
@@ -15,15 +15,33 @@ const props = withDefaults(
     }
 )
 
+const emit = defineEmits<{
+  retry: [message: ChatMessage]
+}>()
+
 const bottomElement = ref<HTMLElement | null>(null)
 
+const showThinking = computed(() => {
+    const lastMessage = props.messages[
+        props.messages.length - 1
+    ]
+
+    // 首个 AI 片段到达后会出现 assistant 消息，此时隐藏转圈。
+    return props.isGenerating &&
+        lastMessage?.role !== 'assistant'
+})
+
 watch(
-    () => [props.messages.length,props.isGenerating],
+    () => [
+        props.messages.length,
+        props.messages[props.messages.length - 1]?.content,
+        props.isGenerating,
+    ],
     async () => {
         // 等待新消息渲染完成后再滚动。
         await nextTick()
         bottomElement.value?.scrollIntoView({
-            behavior:'smooth',
+            behavior:props.isGenerating ? 'auto' : 'smooth',
             block:'end',
         })
     },
@@ -36,10 +54,11 @@ watch(
         v-for="message in messages"
         :key="message.id"
         :message="message"
+        @retry="emit('retry', $event)"
     />
 
     <div
-        v-if="isGenerating"
+        v-if="showThinking"
         class="flex items-center gap-3 text-sm text-neutral-500"
     >
         <div
