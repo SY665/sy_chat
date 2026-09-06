@@ -17,41 +17,57 @@ import (
 	"gorm.io/gorm"
 )
 
-// 前端请求
-type chatRequest struct {
+// ChatRequest 描述发送聊天消息需要的参数。
+type ChatRequest struct {
 	ConversationID string `json:"conversationId" binding:"required"`
 	Message        string `json:"message" binding:"required"`
-	// 允许旧版请求不传模型，后续由 Service 使用默认模型。
+	// 允许旧版请求不传模型，由 Service 使用默认模型。
 	ModelID string `json:"modelId"`
 }
 
-// 处理数据
-type chatMessageData struct {
+// ChatMessageData 描述聊天接口返回的一条已保存消息。
+type ChatMessageData struct {
 	ID        string `json:"id"`
 	Role      string `json:"role"`
 	Content   string `json:"content"`
 	CreatedAt string `json:"createdAt"`
 }
 
-// 返回数据
-type chatData struct {
-	UserMessage      chatMessageData `json:"userMessage"`
-	AssistantMessage chatMessageData `json:"assistantMessage"`
+// ChatData 包含一次问答产生的用户消息和 AI 消息。
+type ChatData struct {
+	UserMessage      ChatMessageData `json:"userMessage"`
+	AssistantMessage ChatMessageData `json:"assistantMessage"`
 }
 
-// 接口输入输出
+// TruncateMessagesData 描述消息截断操作的结果。
+type TruncateMessagesData struct {
+	ConversationID string `json:"conversationId"`
+	MessageID      string `json:"messageId"`
+	DeletedCount   int64  `json:"deletedCount"`
+}
+
+// ChatHandler 负责处理聊天相关的 HTTP 请求。
 type ChatHandler struct {
 	chatService *chat.Service
 }
 
-// 创建聊天handler，注入service
+// NewChatHandler 创建聊天处理器并注入聊天服务。
 func NewChatHandler(chatService *chat.Service) *ChatHandler {
 	return &ChatHandler{
 		chatService: chatService,
 	}
 }
 
-// Send 保存用户消息和暂时生成的 Go 回复。
+// Send godoc
+// @Summary 发送聊天消息
+// @Description 保存用户消息，并以普通 JSON 响应返回完整的 AI 回复。
+// @Tags Chat
+// @Accept json
+// @Produce json
+// @Param request body ChatRequest true "聊天参数"
+// @Success 200 {object} response.Envelope{data=ChatData}
+// @Failure 400,401,404,500 {object} response.Envelope
+// @Router /chat [post]
 func (handler *ChatHandler) Send(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
 	if !ok {
@@ -59,7 +75,7 @@ func (handler *ChatHandler) Send(c *gin.Context) {
 		return
 	}
 
-	var request chatRequest
+	var request ChatRequest
 
 	if err := c.ShouldBindJSON(&request); err != nil {
 		response.Error(
@@ -85,13 +101,22 @@ func (handler *ChatHandler) Send(c *gin.Context) {
 		return
 	}
 
-	response.JSON(c, http.StatusOK, chatData{
+	response.JSON(c, http.StatusOK, ChatData{
 		UserMessage:      newChatMessageData(exchange.UserMessage),
 		AssistantMessage: newChatMessageData(exchange.AssistantMessage),
 	})
 }
 
-// Stream 使用 SSE 将 AI 生成的增量内容持续发送给浏览器。
+// Stream godoc
+// @Summary 流式发送聊天消息
+// @Description 使用 SSE 持续返回 AI 回复。chunk 事件包含增量文本，done 事件包含最终消息，error 事件表示流内错误。
+// @Tags Chat
+// @Accept json
+// @Produce text/event-stream
+// @Param request body ChatRequest true "聊天参数"
+// @Success 200 {string} string "SSE 事件流：chunk、done、error"
+// @Failure 400,401,404,500,501 {object} response.Envelope
+// @Router /chat/stream [post]
 func (handler *ChatHandler) Stream(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
 	if !ok {
@@ -99,7 +124,7 @@ func (handler *ChatHandler) Stream(c *gin.Context) {
 		return
 	}
 
-	var request chatRequest
+	var request ChatRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		response.Error(
 			c,
@@ -157,7 +182,7 @@ func (handler *ChatHandler) Stream(c *gin.Context) {
 	}
 
 	// done 事件提供数据库生成的真实消息 ID 和时间。
-	if err := writeSSEEvent(c, "done", chatData{
+	if err := writeSSEEvent(c, "done", ChatData{
 		UserMessage: newChatMessageData(
 			exchange.UserMessage,
 		),
@@ -174,6 +199,57 @@ func (handler *ChatHandler) Stream(c *gin.Context) {
 			)
 		}
 	}
+}
+
+// TruncateFromMessage godoc
+// @Summary 截断对话消息
+// @Description 删除目标用户消息以及它之后的全部消息，用于重试和编辑重发。
+// @Tags Chat
+// @Produce json
+// @Param id path string true "对话 ID"
+// @Param messageId path string true "作为截断起点的用户消息 ID"
+// @Success 200 {object} response.Envelope{data=TruncateMessagesData}
+// @Failure 400,401,404,500 {object} response.Envelope
+// @Router /conversations/{id}/messages/{messageId}/tail [delete]
+func (handler *ChatHandler) TruncateFromMessage(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录")
+		return
+	}
+
+	conversationID := c.Param("id")
+	messageID := c.Param("messageId")
+
+	deletedCount, err := handler.chatService.TruncateFromUserMessage(
+		c.Request.Context(),
+		chat.TruncateInput{
+			UserID:         userID,
+			ConversationID: conversationID,
+			MessageID:      messageID,
+		},
+	)
+	if err != nil {
+		// 在该接口中，记录不存在表示目标用户消息或所属对话不存在。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.Error(
+				c,
+				http.StatusNotFound,
+				"MESSAGE_BRANCH_NOT_FOUND",
+				"用户消息或所属对话不存在",
+			)
+			return
+		}
+
+		handler.handleError(c, err)
+		return
+	}
+
+	response.JSON(c, http.StatusOK, TruncateMessagesData{
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		DeletedCount:   deletedCount,
+	})
 }
 
 func (handler *ChatHandler) handleError(c *gin.Context, err error) {
@@ -195,6 +271,14 @@ func (handler *ChatHandler) handleError(c *gin.Context, err error) {
 			http.StatusBadRequest,
 			"CONVERSATION_ID_REQUIRED",
 			"缺少对话 ID",
+		)
+
+	case errors.Is(err, chat.ErrMessageIDRequired):
+		response.Error(
+			c,
+			http.StatusBadRequest,
+			"MESSAGE_ID_REQUIRED",
+			"缺少消息 ID",
 		)
 
 	case errors.Is(err, gorm.ErrRecordNotFound):
@@ -232,8 +316,8 @@ func (handler *ChatHandler) handleError(c *gin.Context, err error) {
 	}
 }
 
-func newChatMessageData(message *models.Message) chatMessageData {
-	return chatMessageData{
+func newChatMessageData(message *models.Message) ChatMessageData {
+	return ChatMessageData{
 		ID:        message.ID,
 		Role:      message.Role,
 		Content:   message.Content,

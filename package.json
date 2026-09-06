@@ -3,6 +3,8 @@
   "private": true,
   "scripts": {
     "dev:frontend": "pnpm --filter frontend dev",
-    "build:frontend": "pnpm --filter frontend build"
+    "build:frontend": "pnpm --filter frontend build",
+    "docs:backend": "cd backend && go run github.com/swaggo/swag/cmd/swag@v1.16.4 init -g cmd/api/main.go --parseInternal",
+    "check:backend": "cd backend && go vet ./..."
   }
 }

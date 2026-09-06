@@ -7,6 +7,7 @@ import {
     LogOut,
     UserRound,
     Download,
+    Share2,
 } from '@lucide/vue'
 
 import { useAppStore } from '@/stores/app';
@@ -17,14 +18,17 @@ withDefaults(
     defineProps<{
         title?: string
         canExport?: boolean
+        canShare?: boolean
     }>(),
     {
         title: '新对话',
         canExport: false,
+        canShare: false,
     },
 )
 
 const emit = defineEmits<{
+    share: []
     export: []
 }>()
 
@@ -89,9 +93,15 @@ async function handleLogout() {
         </div>
 
         <button type="button"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-950 disabled:opacity-40 dark:hover:bg-neutral-800 dark:hover:text-white"
+            :disabled="!canShare" title="分享会话" aria-label="分享当前会话" @click="emit('share')">
+            <Share2 class="h-4 w-4" aria-hidden="true" />
+        </button>
+
+        <button type="button"
             class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-950 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-neutral-800 dark:hover:text-white"
             :disabled="!canExport" title="导出会话" aria-label="导出当前会话" @click="emit('export')">
-            
+
             <Download class="h-4 w-4" aria-hidden="true" />
         </button>
 

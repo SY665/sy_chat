@@ -12,16 +12,25 @@ export class ApiRequestError extends Error {
   // 1. 显式声明属性及其类型
   public readonly status: number
   public readonly code: string
+  public readonly requestId: string
 
   constructor(
     status: number,
     code: string,
     message: string,
+    requestId = '',
   ) {
-    super(message)
+    const normalizedRequestId = requestId.trim()
+
+    super(
+      normalizedRequestId
+        ? `${message}（请求 ID：${normalizedRequestId}）`
+        : message,
+    )
     // 2. 显式赋值
     this.status = status
     this.code = code
+    this.requestId = normalizedRequestId
     this.name = 'ApiRequestError'
   }
 }
@@ -72,6 +81,7 @@ export async function apiRequest<T>(
   options: RequestInit = {},
 ): Promise<T> {
   const response = await apiFetch(path, options)
+  const requestId = response.headers.get('X-Request-ID') ?? ''
 
   let payload: ApiEnvelope<T>
 
@@ -82,6 +92,7 @@ export async function apiRequest<T>(
       response.status,
       'INVALID_RESPONSE',
       '后端返回了无法解析的数据',
+      requestId,
     )
   }
 
@@ -90,6 +101,7 @@ export async function apiRequest<T>(
       response.status,
       payload.error?.code ?? 'REQUEST_FAILED',
       payload.error?.message ?? '请求失败',
+      requestId,
     )
   }
 
@@ -98,6 +110,7 @@ export async function apiRequest<T>(
       response.status,
       'EMPTY_RESPONSE',
       '后端响应缺少 data 字段',
+      requestId,
     )
   }
 

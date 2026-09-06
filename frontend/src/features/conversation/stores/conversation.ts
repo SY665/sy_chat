@@ -11,6 +11,8 @@ import {
     listConversations,
     updateConversationPinned,
     updateConversationTitle,
+    shareConversation,
+    unshareConversation,
 } from '@/lib/api/conversation'
 import { ApiRequestError } from '@/lib/api/client'
 
@@ -24,6 +26,8 @@ export const useConversationStore = defineStore('conversation', {
         isLoading: false,
         isCreating: false,
         isMutating: false,
+        isSharing: false,
+        shareError: null as string | null,
         mutatingConversationId: null as string | null,
         error: null as string | null,
     }),
@@ -201,6 +205,54 @@ export const useConversationStore = defineStore('conversation', {
             }
         },
 
+        async share(id: string) {
+            if (this.isSharing) return
+
+            this.isSharing = true
+            this.shareError = null
+
+            try {
+                const result = await shareConversation(id)
+
+                if (this.currentConversation?.id === id) {
+                    this.currentConversation.isShared = true
+                    this.currentConversation.shareToken = result.shareToken
+                    this.currentConversation.sharedAt = result.sharedAt
+                }
+
+                return result
+            } catch (error) {
+                this.shareError = getErrorMessage(error)
+                throw error
+            } finally {
+                this.isSharing = false
+            }
+        },
+
+        async unshare(id: string) {
+            if (this.isSharing) return
+
+            this.isSharing = true
+            this.shareError = null
+
+            try {
+                const result = await unshareConversation(id)
+
+                if (this.currentConversation?.id === id) {
+                    this.currentConversation.isShared = false
+                    this.currentConversation.shareToken = undefined
+                    this.currentConversation.sharedAt = undefined
+                }
+
+                return result
+            } catch (error) {
+                this.shareError = getErrorMessage(error)
+                throw error
+            } finally {
+                this.isSharing = false
+            }
+        },
+
         async remove(id: string) {
             this.mutatingConversationId = id
             this.isMutating = true
@@ -241,6 +293,8 @@ export const useConversationStore = defineStore('conversation', {
             this.isLoading = false
             this.isCreating = false
             this.isMutating = false
+            this.isSharing = false
+            this.shareError = null
             this.mutatingConversationId = null
             this.error = null
         },

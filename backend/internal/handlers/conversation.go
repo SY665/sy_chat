@@ -15,20 +15,13 @@ import (
 	"gorm.io/gorm"
 )
 
-type createConversationRequest struct {
+// CreateConversationRequest 描述创建对话时可以提交的数据。
+type CreateConversationRequest struct {
 	Title string `json:"title"`
 }
 
-type updateConversationTitleRequest struct {
-	Title string `json:"title" binding:"required"`
-}
-
-type updateConversationPinnedRequest struct {
-	// 使用指针区分 false 和请求中没有传入 isPinned。
-	IsPinned *bool `json:"isPinned" binding:"required"`
-}
-
-type conversationMessageData struct {
+// ConversationMessageData 描述对话详情中的单条消息。
+type ConversationMessageData struct {
 	ID        string    `json:"id"`
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
@@ -36,17 +29,21 @@ type conversationMessageData struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-type conversationDetailData struct {
-	ID        string                    `json:"id"`
-	Title     string                    `json:"title"`
-	IsPinned  bool                      `json:"isPinned"`
-	CreatedAt time.Time                 `json:"createdAt"`
-	UpdatedAt time.Time                 `json:"updatedAt"`
-	Messages  []conversationMessageData `json:"messages"`
+// ConversationDetailData 描述包含消息记录的完整对话。
+type ConversationDetailData struct {
+	ID         string                    `json:"id"`
+	Title      string                    `json:"title"`
+	IsPinned   bool                      `json:"isPinned"`
+	IsShared   bool                      `json:"isShared"`
+	ShareToken *string                   `json:"shareToken,omitempty"`
+	SharedAt   *time.Time                `json:"sharedAt,omitempty"`
+	CreatedAt  time.Time                 `json:"createdAt"`
+	UpdatedAt  time.Time                 `json:"updatedAt"`
+	Messages   []ConversationMessageData `json:"messages"`
 }
 
-// conversationSummaryData 是对话列表和创建接口返回的公开数据。
-type conversationSummaryData struct {
+// ConversationSummaryData 描述对话列表中的摘要信息。
+type ConversationSummaryData struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	IsPinned  bool      `json:"isPinned"`
@@ -54,8 +51,67 @@ type conversationSummaryData struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-type conversationListData struct {
-	Conversations []conversationSummaryData `json:"conversations"`
+// ConversationListData 包含当前用户的对话列表。
+type ConversationListData struct {
+	Conversations []ConversationSummaryData `json:"conversations"`
+}
+
+// UpdateConversationTitleRequest 描述修改对话标题的参数。
+type UpdateConversationTitleRequest struct {
+	Title string `json:"title" binding:"required"`
+}
+
+// UpdateConversationPinnedRequest 描述对话的新置顶状态。
+type UpdateConversationPinnedRequest struct {
+	// 使用指针区分 false 和请求中没有传入 isPinned。
+	IsPinned *bool `json:"isPinned" binding:"required"`
+}
+
+// ConversationTitleData 是修改标题后的响应数据。
+type ConversationTitleData struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// ConversationPinnedData 是修改置顶状态后的响应数据。
+type ConversationPinnedData struct {
+	ID       string `json:"id"`
+	IsPinned bool   `json:"isPinned"`
+}
+
+// ConversationDeleteData 是删除对话后的响应数据。
+type ConversationDeleteData struct {
+	ID      string `json:"id"`
+	Message string `json:"message"`
+}
+
+// ConversationShareData 包含公开分享令牌和创建时间。
+type ConversationShareData struct {
+	ShareToken string    `json:"shareToken"`
+	SharedAt   time.Time `json:"sharedAt"`
+}
+
+// PublicShareMessageData 描述公开页面允许展示的消息。
+type PublicShareMessageData struct {
+	ID        string    `json:"id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// PublicShareData 描述无需登录即可读取的分享内容。
+type PublicShareData struct {
+	Title     string                   `json:"title"`
+	OwnerName string                   `json:"ownerName"`
+	SharedAt  *time.Time               `json:"sharedAt"`
+	Messages  []PublicShareMessageData `json:"messages"`
+	ViewCount int                      `json:"viewCount"`
+}
+
+// ConversationUnshareData 是关闭分享后的响应数据。
+type ConversationUnshareData struct {
+	ID       string `json:"id"`
+	IsShared bool   `json:"isShared"`
 }
 
 type ConversationHandler struct {
@@ -70,7 +126,18 @@ func NewConversationHandler(
 	}
 }
 
-// Create 为当前登录用户创建对话。
+// Create godoc
+// @Summary 创建对话
+// @Description 为当前登录用户创建一个新对话；标题为空时使用默认标题。
+// @Tags Conversations
+// @Accept json
+// @Produce json
+// @Param request body CreateConversationRequest true "创建对话参数"
+// @Success 201 {object} response.Envelope{data=ConversationSummaryData}
+// @Failure 400 {object} response.Envelope
+// @Failure 401 {object} response.Envelope
+// @Failure 500 {object} response.Envelope
+// @Router /conversations [post]
 func (handler *ConversationHandler) Create(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
 	if !ok {
@@ -78,7 +145,7 @@ func (handler *ConversationHandler) Create(c *gin.Context) {
 		return
 	}
 
-	var request createConversationRequest
+	var request CreateConversationRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		response.Error(
 			c,
@@ -106,7 +173,15 @@ func (handler *ConversationHandler) Create(c *gin.Context) {
 	)
 }
 
-// List 返回当前登录用户的全部对话。
+// List godoc
+// @Summary 获取对话列表
+// @Description 返回当前登录用户的全部对话，置顶对话优先排列。
+// @Tags Conversations
+// @Produce json
+// @Success 200 {object} response.Envelope{data=ConversationListData}
+// @Failure 401 {object} response.Envelope
+// @Failure 500 {object} response.Envelope
+// @Router /conversations [get]
 func (handler *ConversationHandler) List(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
 	if !ok {
@@ -123,7 +198,7 @@ func (handler *ConversationHandler) List(c *gin.Context) {
 		return
 	}
 
-	data := make([]conversationSummaryData, 0, len(conversations))
+	data := make([]ConversationSummaryData, 0, len(conversations))
 	for index := range conversations {
 		data = append(
 			data,
@@ -131,12 +206,23 @@ func (handler *ConversationHandler) List(c *gin.Context) {
 		)
 	}
 
-	response.JSON(c, http.StatusOK, conversationListData{
+	response.JSON(c, http.StatusOK, ConversationListData{
 		Conversations: data,
 	})
 }
 
-// Get 返回当前用户的指定对话及其消息。
+// Get godoc
+// @Summary 获取对话详情
+// @Description 返回指定对话及其全部消息。
+// @Tags Conversations
+// @Produce json
+// @Param id path string true "对话 ID"
+// @Success 200 {object} response.Envelope{data=ConversationDetailData}
+// @Failure 400 {object} response.Envelope
+// @Failure 401 {object} response.Envelope
+// @Failure 404 {object} response.Envelope
+// @Failure 500 {object} response.Envelope
+// @Router /conversations/{id} [get]
 func (handler *ConversationHandler) Get(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
 	if !ok {
@@ -154,11 +240,11 @@ func (handler *ConversationHandler) Get(c *gin.Context) {
 		return
 	}
 
-	messages := make([]conversationMessageData, 0, len(conversation.Messages))
+	messages := make([]ConversationMessageData, 0, len(conversation.Messages))
 	for index := range conversation.Messages {
 		message := &conversation.Messages[index]
 
-		messages = append(messages, conversationMessageData{
+		messages = append(messages, ConversationMessageData{
 			ID:        message.ID,
 			Role:      message.Role,
 			Content:   message.Content,
@@ -167,17 +253,29 @@ func (handler *ConversationHandler) Get(c *gin.Context) {
 		})
 	}
 
-	response.JSON(c, http.StatusOK, conversationDetailData{
-		ID:        conversation.ID,
-		Title:     conversation.Title,
-		IsPinned:  conversation.IsPinned,
-		CreatedAt: conversation.CreatedAt,
-		UpdatedAt: conversation.UpdatedAt,
-		Messages:  messages,
+	response.JSON(c, http.StatusOK, ConversationDetailData{
+		ID:         conversation.ID,
+		Title:      conversation.Title,
+		IsPinned:   conversation.IsPinned,
+		CreatedAt:  conversation.CreatedAt,
+		UpdatedAt:  conversation.UpdatedAt,
+		Messages:   messages,
+		IsShared:   conversation.IsShared,
+		ShareToken: conversation.ShareToken,
+		SharedAt:   conversation.SharedAt,
 	})
 }
 
-// UpdateTitle 修改当前用户的对话标题。
+// UpdateTitle godoc
+// @Summary 修改对话标题
+// @Tags Conversations
+// @Accept json
+// @Produce json
+// @Param id path string true "对话 ID"
+// @Param request body UpdateConversationTitleRequest true "新标题"
+// @Success 200 {object} response.Envelope{data=ConversationTitleData}
+// @Failure 400,401,404,500 {object} response.Envelope
+// @Router /conversations/{id} [patch]
 func (handler *ConversationHandler) UpdateTitle(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
 	if !ok {
@@ -185,7 +283,7 @@ func (handler *ConversationHandler) UpdateTitle(c *gin.Context) {
 		return
 	}
 
-	var request updateConversationTitleRequest
+	var request UpdateConversationTitleRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		response.Error(
 			c,
@@ -207,13 +305,22 @@ func (handler *ConversationHandler) UpdateTitle(c *gin.Context) {
 		return
 	}
 
-	response.JSON(c, http.StatusOK, gin.H{
-		"id":    c.Param("id"),
-		"title": strings.TrimSpace(request.Title),
+	response.JSON(c, http.StatusOK, ConversationTitleData{
+		ID:    c.Param("id"),
+		Title: strings.TrimSpace(request.Title),
 	})
 }
 
-// UpdatePinned 修改当前用户对话的置顶状态。
+// UpdatePinned godoc
+// @Summary 修改对话置顶状态
+// @Tags Conversations
+// @Accept json
+// @Produce json
+// @Param id path string true "对话 ID"
+// @Param request body UpdateConversationPinnedRequest true "置顶状态"
+// @Success 200 {object} response.Envelope{data=ConversationPinnedData}
+// @Failure 400,401,404,500 {object} response.Envelope
+// @Router /conversations/{id}/pin [patch]
 func (handler *ConversationHandler) UpdatePinned(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
 	if !ok {
@@ -221,7 +328,7 @@ func (handler *ConversationHandler) UpdatePinned(c *gin.Context) {
 		return
 	}
 
-	var request updateConversationPinnedRequest
+	var request UpdateConversationPinnedRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		response.Error(
 			c,
@@ -243,13 +350,159 @@ func (handler *ConversationHandler) UpdatePinned(c *gin.Context) {
 		return
 	}
 
-	response.JSON(c, http.StatusOK, gin.H{
-		"id":       c.Param("id"),
-		"isPinned": *request.IsPinned,
+	response.JSON(c, http.StatusOK, ConversationPinnedData{
+		ID:       c.Param("id"),
+		IsPinned: *request.IsPinned,
 	})
 }
 
-// Delete 删除当前用户的指定对话。
+// GetShared godoc
+// @Summary 获取公开分享
+// @Description 根据分享令牌读取公开对话，不需要登录。
+// @Tags Shares
+// @Produce json
+// @Param token path string true "分享令牌"
+// @Success 200 {object} response.Envelope{data=PublicShareData}
+// @Failure 400,404,500 {object} response.Envelope
+// @Router /shares/{token} [get]
+func (handler *ConversationHandler) GetShared(c *gin.Context) {
+	conversation, err := handler.conversationService.GetShared(
+		c.Request.Context(),
+		c.Param("token"),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, conversationservice.ErrShareTokenRequired):
+			response.Error(
+				c,
+				http.StatusBadRequest,
+				"SHARE_TOKEN_REQUIRED",
+				"缺少分享令牌",
+			)
+
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			response.Error(
+				c,
+				http.StatusNotFound,
+				"SHARE_NOT_FOUND",
+				"分享不存在或已失效",
+			)
+
+		default:
+			slog.Error("get shared conversation", "error", err)
+			response.Error(
+				c,
+				http.StatusInternalServerError,
+				"INTERNAL_ERROR",
+				"读取分享内容失败",
+			)
+		}
+		return
+	}
+
+	messages := make(
+		[]PublicShareMessageData,
+		0,
+		len(conversation.Messages),
+	)
+	for index := range conversation.Messages {
+		message := &conversation.Messages[index]
+
+		// 系统和工具消息可能含有内部信息，不放入公开页面。
+		if message.Role != models.MessageRoleUser &&
+			message.Role != models.MessageRoleAssistant {
+			continue
+		}
+
+		messages = append(messages, PublicShareMessageData{
+			ID:        message.ID,
+			Role:      message.Role,
+			Content:   message.Content,
+			CreatedAt: message.CreatedAt,
+		})
+	}
+
+	response.JSON(c, http.StatusOK, PublicShareData{
+		Title:     conversation.Title,
+		OwnerName: publicOwnerName(conversation.User),
+		SharedAt:  conversation.SharedAt,
+		ViewCount: conversation.ViewCount,
+		Messages:  messages,
+	})
+}
+
+// Share godoc
+// @Summary 创建公开分享
+// @Description 为当前用户的指定对话创建或返回公开分享令牌。
+// @Tags Shares
+// @Produce json
+// @Param id path string true "对话 ID"
+// @Success 200 {object} response.Envelope{data=ConversationShareData}
+// @Failure 400,401,404,500 {object} response.Envelope
+// @Router /conversations/{id}/share [post]
+func (handler *ConversationHandler) Share(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录")
+		return
+	}
+
+	result, err := handler.conversationService.Share(
+		c.Request.Context(),
+		c.Param("id"),
+		userID,
+	)
+	if err != nil {
+		handler.handleError(c, err)
+		return
+	}
+
+	response.JSON(c, http.StatusOK, ConversationShareData{
+		ShareToken: result.Token,
+		SharedAt:   result.SharedAt,
+	})
+}
+
+// Unshare godoc
+// @Summary 关闭公开分享
+// @Description 使指定对话现有的公开分享令牌失效。
+// @Tags Shares
+// @Produce json
+// @Param id path string true "对话 ID"
+// @Success 200 {object} response.Envelope{data=ConversationUnshareData}
+// @Failure 400,401,404,500 {object} response.Envelope
+// @Router /conversations/{id}/share [delete]
+func (handler *ConversationHandler) Unshare(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录")
+		return
+	}
+
+	err := handler.conversationService.Unshare(
+		c.Request.Context(),
+		c.Param("id"),
+		userID,
+	)
+	if err != nil {
+		handler.handleError(c, err)
+		return
+	}
+
+	response.JSON(c, http.StatusOK, ConversationUnshareData{
+		ID:       c.Param("id"),
+		IsShared: false,
+	})
+}
+
+// Delete godoc
+// @Summary 删除对话
+// @Tags Conversations
+// @Produce json
+// @Param id path string true "对话 ID"
+// @Success 200 {object} response.Envelope{data=ConversationDeleteData}
+// @Failure 400,401,404,500 {object} response.Envelope
+// @Router /conversations/{id} [delete]
 func (handler *ConversationHandler) Delete(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
 	if !ok {
@@ -267,9 +520,9 @@ func (handler *ConversationHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	response.JSON(c, http.StatusOK, gin.H{
-		"id":      c.Param("id"),
-		"message": "对话已删除",
+	response.JSON(c, http.StatusOK, ConversationDeleteData{
+		ID:      c.Param("id"),
+		Message: "对话已删除",
 	})
 }
 
@@ -325,12 +578,24 @@ func (handler *ConversationHandler) handleError(
 
 func newConversationSummaryData(
 	conversation *models.Conversation,
-) conversationSummaryData {
-	return conversationSummaryData{
+) ConversationSummaryData {
+	return ConversationSummaryData{
 		ID:        conversation.ID,
 		Title:     conversation.Title,
 		IsPinned:  conversation.IsPinned,
 		CreatedAt: conversation.CreatedAt,
 		UpdatedAt: conversation.UpdatedAt,
 	}
+}
+
+func publicOwnerName(user models.User) string {
+	if user.Name != nil && strings.TrimSpace(*user.Name) != "" {
+		return strings.TrimSpace(*user.Name)
+	}
+
+	if user.Username != nil && strings.TrimSpace(*user.Username) != "" {
+		return strings.TrimSpace(*user.Username)
+	}
+
+	return "用户"
 }

@@ -22,6 +22,7 @@ export async function readEventStream(
       response.status,
       'EMPTY_STREAM',
       '后端没有返回流式内容',
+      response.headers.get('X-Request-ID') ?? '',
     )
   }
 

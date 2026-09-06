@@ -24,6 +24,14 @@ export interface ChatResponse {
     assistantMessage: ChatMessage
 }
 
+/**
+ * 对应后端 TruncateMessagesData。
+ */
+export interface TruncateMessagesResponse {
+    conversationId: string
+    messageId: string
+    deletedCount: number
+}
 
 /**
  * 将用户信息发送到go聊天窗口
@@ -41,6 +49,24 @@ export function requestChatReply(
             modelId,
         } satisfies ChatRequest),
     })
+}
+
+/**
+ * 删除目标用户消息以及它之后的全部消息。
+ */
+export function truncateMessagesFromUserMessage(
+    conversationId: string,
+    messageId: string,
+): Promise<TruncateMessagesResponse> {
+    const encodedConversationId = encodeURIComponent(conversationId)
+    const encodedMessageId = encodeURIComponent(messageId)
+
+    return apiRequest<TruncateMessagesResponse>(
+        `/conversations/${encodedConversationId}/messages/${encodedMessageId}/tail`,
+        {
+            method: 'DELETE',
+        },
+    )
 }
 
 /**
@@ -63,6 +89,8 @@ export async function requestChatStream(
         } satisfies ChatRequest),
     })
 
+    const requestId = response.headers.get('X-Request-ID') ?? ''
+
     if (!response.ok) {
         throw await createResponseError(response)
     }
@@ -73,6 +101,7 @@ export async function requestChatStream(
             response.status,
             'INVALID_STREAM_RESPONSE',
             '后端没有返回正确的流式响应',
+            requestId,
         )
     }
 
@@ -80,10 +109,10 @@ export async function requestChatStream(
 
     await readEventStream(response, (event) => {
         if (event.event === 'chunk') {
-            const data = parseEventData<ChatChunkData>(event.data)
+            const data = parseEventData<ChatChunkData>(event.data, requestId)
 
             if (typeof data.content !== 'string') {
-                throw invalidStreamError()
+                throw invalidStreamError(requestId)
             }
 
             onChunk(data.content)
@@ -91,10 +120,10 @@ export async function requestChatStream(
         }
 
         if (event.event === 'done') {
-            const data = parseEventData<ChatResponse>(event.data)
+            const data = parseEventData<ChatResponse>(event.data, requestId)
 
             if (!data.userMessage || !data.assistantMessage) {
-                throw invalidStreamError()
+                throw invalidStreamError(requestId)
             }
 
             completed.value = data
@@ -102,12 +131,13 @@ export async function requestChatStream(
         }
 
         if (event.event === 'error') {
-            const data = parseEventData<ChatStreamError>(event.data)
+            const data = parseEventData<ChatStreamError>(event.data, requestId)
 
             throw new ApiRequestError(
                 response.status,
                 data.code || 'STREAM_FAILED',
                 data.message || '生成回复失败',
+                requestId,
             )
         }
     })
@@ -117,30 +147,33 @@ export async function requestChatStream(
             response.status,
             'STREAM_INTERRUPTED',
             '流式响应在完成前中断',
+            requestId,
         )
     }
     return completed.value
 }
 
-function parseEventData<T>(data: string): T {
+function parseEventData<T>(data: string, requestId: string): T {
     try {
         return JSON.parse(data) as T
     } catch {
-        throw invalidStreamError()
+        throw invalidStreamError(requestId)
     }
 }
 
-function invalidStreamError(): ApiRequestError {
+function invalidStreamError(requestId = ''): ApiRequestError {
     return new ApiRequestError(
         200,
         'INVALID_STREAM_EVENT',
         '后端返回了无法解析的流式事件',
+        requestId,
     )
 }
 
 async function createResponseError(
     response: Response,
 ): Promise<ApiRequestError> {
+    const requestId = response.headers.get('X-Request-ID') ?? ''
     try {
         const payload = (await response.json()) as ApiEnvelope<never>
 
@@ -148,12 +181,14 @@ async function createResponseError(
             response.status,
             payload.error?.code ?? 'REQUEST_FAILED',
             payload.error?.message ?? '请求失败',
+            requestId,
         )
     } catch {
         return new ApiRequestError(
             response.status,
             'INVALID_RESPONSE',
             '后端返回了无法解析的数据',
+            requestId,
         )
     }
 }

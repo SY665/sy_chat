@@ -22,6 +22,7 @@ var (
 	ErrConversationIDRequired = errors.New("conversation ID is required")
 	ErrTitleRequired          = errors.New("conversation title is required")
 	ErrTitleTooLong           = errors.New("conversation title is too long")
+	ErrShareTokenRequired     = errors.New("share token is required")
 )
 
 // Repository 描述 Service 所需要的数据库操作。
@@ -35,6 +36,11 @@ type Repository interface {
 		ctx context.Context,
 		id string,
 		userID string,
+	) (*models.Conversation, error)
+
+	FindSharedByToken(
+		ctx context.Context,
+		token string,
 	) (*models.Conversation, error)
 
 	ListByUserID(
@@ -138,6 +144,24 @@ func (service *Service) Get(
 	conversation, err := service.repository.FindByID(ctx, id, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get conversation: %w", err)
+	}
+
+	return conversation, nil
+}
+
+// GetShared 使用公开令牌读取分享会话，不需要用户身份。
+func (service *Service) GetShared(
+	ctx context.Context,
+	token string,
+) (*models.Conversation, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, ErrShareTokenRequired
+	}
+
+	conversation, err := service.repository.FindSharedByToken(ctx, token)
+	if err != nil {
+		return nil, fmt.Errorf("get shared conversation: %w", err)
 	}
 
 	return conversation, nil

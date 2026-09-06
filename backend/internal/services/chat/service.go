@@ -23,6 +23,7 @@ var (
 	ErrMessageTooLong         = errors.New("message is too long")
 	ErrStreamingNotSupported  = errors.New("AI provider does not support streaming")
 	ErrModelUnavailable       = errors.New("requested model is unavailable")
+	ErrMessageIDRequired      = errors.New("message ID is required")
 )
 
 // Repository 描述聊天业务需要的消息数据库操作。
@@ -41,6 +42,13 @@ type Repository interface {
 		userID string,
 		limit int,
 	) ([]models.Message, error)
+
+	DeleteFromUserMessage(
+		ctx context.Context,
+		conversationID string,
+		userID string,
+		messageID string,
+	) (int64, error)
 }
 
 type SendInput struct {
@@ -48,6 +56,13 @@ type SendInput struct {
 	ConversationID string
 	Content        string
 	ModelID        string
+}
+
+// TruncateInput 描述从某条用户消息开始截断对话所需的数据。
+type TruncateInput struct {
+	UserID         string
+	ConversationID string
+	MessageID      string
 }
 
 type Exchange struct {
@@ -252,6 +267,28 @@ func (service *Service) Stream(
 		},
 	)
 	if err != nil {
+		streamCanceled :=
+			errors.Is(err, context.Canceled) ||
+				errors.Is(ctx.Err(), context.Canceled)
+
+		if streamCanceled {
+			partialReply := strings.TrimSpace(replyBuilder.String())
+
+			if saveErr := service.saveInterruptedStream(
+				userID,
+				conversationID,
+				content,
+				partialReply,
+			); saveErr != nil {
+				return nil, fmt.Errorf(
+					"save interrupted chat exchange: %w",
+					saveErr,
+				)
+			}
+
+			return nil, context.Canceled
+		}
+
 		return nil, fmt.Errorf("stream AI reply: %w", err)
 	}
 
@@ -293,6 +330,85 @@ func (service *Service) Stream(
 		UserMessage:      userMessage,
 		AssistantMessage: assistantMessage,
 	}, nil
+}
+
+// saveInterruptedStream 使用独立上下文保存被用户停止的流式结果。
+// 原 HTTP 请求的 Context 已经取消，不能继续用于数据库操作。
+func (service *Service) saveInterruptedStream(
+	userID string,
+	conversationID string,
+	content string,
+	partialReply string,
+) error {
+	saveContext, cancel := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer cancel()
+
+	now := time.Now()
+
+	userMessage := &models.Message{
+		ConversationID: conversationID,
+		Role:           models.MessageRoleUser,
+		Content:        content,
+		CreatedAt:      now,
+	}
+
+	var assistantMessage *models.Message
+
+	if partialReply != "" {
+		assistantMessage = &models.Message{
+			ConversationID: conversationID,
+			Role:           models.MessageRoleAssistant,
+			Content:        partialReply,
+			CreatedAt:      now.Add(time.Millisecond),
+		}
+	}
+
+	return service.repository.CreateExchange(
+		saveContext,
+		userID,
+		createConversationTitle(content),
+		userMessage,
+		assistantMessage,
+	)
+}
+
+// TruncateFromUserMessage 删除指定用户消息以及它之后的对话分支。
+func (service *Service) TruncateFromUserMessage(
+	ctx context.Context,
+	input TruncateInput,
+) (int64, error) {
+	userID := strings.TrimSpace(input.UserID)
+	if userID == "" {
+		return 0, ErrUserIDRequired
+	}
+
+	conversationID := strings.TrimSpace(input.ConversationID)
+	if conversationID == "" {
+		return 0, ErrConversationIDRequired
+	}
+
+	messageID := strings.TrimSpace(input.MessageID)
+	if messageID == "" {
+		return 0, ErrMessageIDRequired
+	}
+
+	deletedCount, err := service.repository.DeleteFromUserMessage(
+		ctx,
+		conversationID,
+		userID,
+		messageID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"truncate conversation from user message: %w",
+			err,
+		)
+	}
+
+	return deletedCount, nil
 }
 
 // resolveModelID 统一处理普通请求与流式请求的模型选择。

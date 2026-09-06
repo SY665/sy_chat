@@ -20,9 +20,9 @@ func NewMessageRepository(db *gorm.DB) *MessageRepository {
 	}
 }
 
-// CreateExchange 在同一事务中保存用户消息和 AI 回复。
+// CreateExchange 在同一事务中保存用户消息和可选的 AI 回复。
 //
-// 如果任意一步失败，事务会回滚，不会只留下其中一条消息。
+// assistantMessage 为 nil 时只保存用户消息，用于生成开始前就被停止的情况。
 func (repository *MessageRepository) CreateExchange(
 	ctx context.Context,
 	userID string,
@@ -51,8 +51,11 @@ func (repository *MessageRepository) CreateExchange(
 				return fmt.Errorf("create user message: %w", err)
 			}
 
-			if err := transaction.Create(assistantMessage).Error; err != nil {
-				return fmt.Errorf("create assistant message: %w", err)
+			// 已经收到部分回复时保存 AI 消息；尚未收到内容时只保存用户消息。
+			if assistantMessage != nil {
+				if err := transaction.Create(assistantMessage).Error; err != nil {
+					return fmt.Errorf("create assistant message: %w", err)
+				}
 			}
 
 			updates := map[string]any{
@@ -132,4 +135,85 @@ func (repository *MessageRepository) ListRecentByConversation(
 	}
 
 	return messages, nil
+}
+
+// DeleteFromUserMessage 删除指定用户消息以及它之后的全部消息。
+//
+// 查询目标消息时同时校验会话归属，并使用事务保证删除与会话更新时间同步。
+func (repository *MessageRepository) DeleteFromUserMessage(
+	ctx context.Context,
+	conversationID string,
+	userID string,
+	messageID string,
+) (int64, error) {
+	var deletedCount int64
+
+	err := repository.db.WithContext(ctx).Transaction(
+		func(transaction *gorm.DB) error {
+			var target models.Message
+
+			// 删除边界只能是当前用户会话中的用户消息。
+			if err := transaction.
+				Table("messages").
+				Select(
+					"messages.id",
+					"messages.conversation_id",
+					"messages.created_at",
+				).
+				Joins(
+					"JOIN conversations ON conversations.id = messages.conversation_id",
+				).
+				Where("messages.id = ?", messageID).
+				Where("messages.conversation_id = ?", conversationID).
+				Where("messages.role = ?", models.MessageRoleUser).
+				Where("conversations.user_id = ?", userID).
+				Take(&target).
+				Error; err != nil {
+				return fmt.Errorf(
+					"find truncation start message: %w",
+					err,
+				)
+			}
+
+			// 用户消息和对应 AI 消息的创建时间有先后顺序，因此可以按时间截断。
+			result := transaction.
+				Where("conversation_id = ?", target.ConversationID).
+				Where("created_at >= ?", target.CreatedAt).
+				Delete(&models.Message{})
+			if result.Error != nil {
+				return fmt.Errorf(
+					"delete messages from target: %w",
+					result.Error,
+				)
+			}
+
+			deletedCount = result.RowsAffected
+
+			// 截断本身也是一次会话变更，需要刷新会话排序时间。
+			if err := transaction.
+				Model(&models.Conversation{}).
+				Where(
+					"id = ? AND user_id = ?",
+					target.ConversationID,
+					userID,
+				).
+				Update("updated_at", time.Now()).
+				Error; err != nil {
+				return fmt.Errorf(
+					"update truncated conversation time: %w",
+					err,
+				)
+			}
+
+			return nil
+		},
+	)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"delete messages from user message: %w",
+			err,
+		)
+	}
+
+	return deletedCount, nil
 }

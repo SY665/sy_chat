@@ -54,6 +54,53 @@ func (repository *ConversationRepository) FindByID(
 	return &conversation, nil
 }
 
+// FindSharedByToken 查询公开会话，并原子增加浏览次数。
+func (repository *ConversationRepository) FindSharedByToken(
+	ctx context.Context,
+	token string,
+) (*models.Conversation, error) {
+	var conversation models.Conversation
+
+	err := repository.db.
+		WithContext(ctx).
+		Preload("User").
+		Preload("Messages", func(db *gorm.DB) *gorm.DB {
+			return db.Order("created_at ASC")
+		}).
+		Where("share_token = ? AND is_shared = ?", token, true).
+		First(&conversation).
+		Error
+	if err != nil {
+		return nil, fmt.Errorf("find shared conversation: %w", err)
+	}
+
+	viewedAt := time.Now()
+	result := repository.db.
+		WithContext(ctx).
+		Model(&models.Conversation{}).
+		Where(
+			"id = ? AND share_token = ? AND is_shared = ?",
+			conversation.ID,
+			token,
+			true,
+		).
+		UpdateColumns(map[string]any{
+			"view_count":     gorm.Expr("view_count + 1"),
+			"last_viewed_at": viewedAt,
+		})
+	if result.Error != nil {
+		return nil, fmt.Errorf("record shared conversation view: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	conversation.ViewCount++
+	conversation.LastViewedAt = &viewedAt
+
+	return &conversation, nil
+}
+
 // ListByUserID 查询用户的对话列表，置顶对话优先显示。
 func (repository *ConversationRepository) ListByUserID(
 	ctx context.Context,

@@ -2,7 +2,10 @@ import { defineStore } from "pinia";
 
 import type { ChatMessage } from "../types";
 import { ApiRequestError, isAbortError } from "@/lib/api/client";
-import { requestChatStream } from "@/lib/api/chat";
+import {
+    requestChatStream,
+    truncateMessagesFromUserMessage,
+} from "@/lib/api/chat";
 import { markRaw } from 'vue'
 
 export const useChatStore = defineStore('chat', {
@@ -111,25 +114,32 @@ export const useChatStore = defineStore('chat', {
                     this.messages.push(response.assistantMessage)
                 }
             } catch (error) {
-                // 未完成的 AI 回复不会写入数据库，因此从页面移除。
-                this.messages = this.messages.filter(
-                    (message) => message.id !== pendingAssistantID,
-                )
-
                 const pendingUserMessage = this.messages.find(
                     (message) => message.id === pendingUserID,
                 )
+                const pendingAssistantMessage = this.messages.find(
+                    (message) => message.id === pendingAssistantID,
+                )
 
                 if (isAbortError(error)) {
+                    // 后端会持久化用户消息和已生成的部分回复，
+                    // 前端同时保留当前内容，避免点击停止后消息突然消失。
                     if (pendingUserMessage) {
                         pendingUserMessage.status = 'stopped'
+                    }
+                    if (pendingAssistantMessage) {
+                        pendingAssistantMessage.status = 'stopped'
                     }
 
                     this.errorMessage = null
                     throw error
                 }
 
-                // 保留原始输入，下一步允许用户直接重试。
+                // 普通生成失败不会持久化未完成的 AI 回复。
+                this.messages = this.messages.filter(
+                    (message) => message.id !== pendingAssistantID,
+                )
+
                 if (pendingUserMessage) {
                     pendingUserMessage.status = 'failed'
                 }
@@ -143,6 +153,60 @@ export const useChatStore = defineStore('chat', {
                 }
 
                 this.isGenerating = false
+            }
+        },
+
+        /**
+         * 删除数据库中的旧消息分支，并使用指定内容重新生成回复。
+         *
+         * 该方法只处理已经持久化的用户消息；replacementContent
+         * 可以是原始内容，也可以是用户编辑后的内容。
+         */
+        async truncateAndResend(
+            conversationID: string,
+            message: ChatMessage,
+            replacementContent = message.content,
+            modelId = '',
+        ) {
+            const content = replacementContent.trim()
+
+            if (
+                this.isGenerating ||
+                !conversationID ||
+                !content ||
+                message.role !== 'user' ||
+                message.status !== undefined
+            ) {
+                return
+            }
+
+            const messageIndex = this.messages.findIndex(
+                (item) => item.id === message.id,
+            )
+            if (messageIndex === -1) {
+                return
+            }
+
+            this.errorMessage = null
+
+            try {
+                // 先由后端删除目标用户消息及其后的持久化分支。
+                await truncateMessagesFromUserMessage(
+                    conversationID,
+                    message.id,
+                )
+
+                // 后端成功后再同步本地状态，避免请求失败时页面提前丢失消息。
+                this.messages.splice(messageIndex)
+
+                await this.sendMessage(
+                    conversationID,
+                    content,
+                    modelId,
+                )
+            } catch (error) {
+                this.errorMessage = getErrorMessage(error)
+                throw error
             }
         },
 

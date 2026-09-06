@@ -5,6 +5,9 @@ import type {
   DeleteConversationData,
   UpdateConversationData,
   UpdateConversationPinnedData,
+  PublicShareData,
+  ShareConversationData,
+  UnshareConversationData,
 } from '@/features/conversation/types'
 
 import { apiRequest } from './client'
@@ -64,6 +67,36 @@ export function deleteConversation(
     {
       method: 'DELETE',
     },
+  )
+}
+
+export function shareConversation(
+  id: string,
+): Promise<ShareConversationData> {
+  return apiRequest<ShareConversationData>(
+    `/conversations/${encodeURIComponent(id)}/share`,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export function unshareConversation(
+  id: string,
+): Promise<UnshareConversationData> {
+  return apiRequest<UnshareConversationData>(
+    `/conversations/${encodeURIComponent(id)}/share`,
+    {
+      method: 'DELETE',
+    },
+  )
+}
+
+export function getSharedConversation(
+  token: string,
+): Promise<PublicShareData> {
+  return apiRequest<PublicShareData>(
+    `/shares/${encodeURIComponent(token)}`,
   )
 }
 

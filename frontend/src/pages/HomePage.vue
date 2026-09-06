@@ -13,10 +13,11 @@ import { useModelStore } from '@/features/model/stores/model'
 import MessageList from '@/features/chat/components/MessageList.vue'
 import { useChatStore } from '@/features/chat/stores/chat'
 import { useConversationStore } from '@/features/conversation/stores/conversation'
-import { ApiRequestError } from '@/lib/api/client'
+import { ApiRequestError, isAbortError } from '@/lib/api/client'
 import type { ChatMessage } from '@/features/chat/types'
 import { useAppStore } from '@/stores/app'
 import { exportConversationAsMarkdown } from '@/features/conversation/utils/exportConversation'
+import ShareDialog from '@/features/share/components/ShareDialog.vue'
 
 const appStore = useAppStore()
 const modelStore = useModelStore()
@@ -24,7 +25,9 @@ const route = useRoute()
 const router = useRouter()
 
 const { sidebarCollapsed } = storeToRefs(appStore)
+const shareDialogOpen = ref(false)
 const skipNextConversationLoad = ref(false)
+const preserveMessagesOnNextRouteChange = ref(false)
 
 const chatStore = useChatStore()
 const {
@@ -159,16 +162,41 @@ function handleExportConversation() {
   )
 }
 
+async function reloadStoppedConversation(
+  conversationID: string,
+  previousMessageCount: number,
+) {
+  const retryDelays = [100, 200, 400, 800]
+
+  // 浏览器会先感知连接取消，后端随后完成持久化，因此进行短暂重试。
+  for (const delay of retryDelays) {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, delay)
+    })
+
+    await loadSelectedConversation(conversationID)
+
+    if (messages.value.length > previousMessageCount) {
+      return
+    }
+  }
+}
+
 async function handleSend(content: string) {
+  const previousMessageCount = messages.value.filter(
+    (message) => message.status === undefined,
+  ).length
   // 在异步创建会话之前记录模型，整个请求使用同一个选择。
   const modelId = modelStore.selectedModelId
   let targetConversationID = conversationId.value
+  let createdConversationForSend = false
 
   try {
     // 用户在空白 /chat 页面直接发送时，先自动创建对话。
     if (!targetConversationID) {
       const conversation = await conversationStore.create()
 
+      createdConversationForSend = true
       skipNextConversationLoad.value = true
       targetConversationID = conversation.id
 
@@ -186,24 +214,98 @@ async function handleSend(content: string) {
     }
     await loadSelectedConversation(targetConversationID)
     await conversationStore.loadConversations()
+  } catch (error) {
+    if (
+      isAbortError(error) &&
+      targetConversationID &&
+      conversationId.value === targetConversationID
+    ) {
+      // 重新读取后端保存的用户消息和部分 AI 回复，并取得真实 ID。
+      await reloadStoppedConversation(
+        targetConversationID,
+        previousMessageCount,
+      )
+      await conversationStore.loadConversations()
+      return
+    }
+    if (createdConversationForSend && targetConversationID) {
+      try {
+        // 首条消息失败时删除刚创建的空会话，但保留失败消息用于重试。
+        await conversationStore.remove(targetConversationID)
+
+        if (conversationId.value === targetConversationID) {
+          preserveMessagesOnNextRouteChange.value = true
+          await router.replace('/chat')
+        }
+      } catch {
+        preserveMessagesOnNextRouteChange.value = false
+        // 删除失败时保留当前页面，由 Conversation Store 展示错误。
+      }
+    }
+
+    // 其他错误信息已经保存在对应 Store。
+  }
+}
+
+async function regenerateFromUserMessage(
+  message: ChatMessage,
+  content: string,
+) {
+  const targetConversationID = conversationId.value
+
+  if (
+    isGenerating.value ||
+    !targetConversationID ||
+    message.role !== 'user' ||
+    message.status !== undefined
+  ) {
+    return
+  }
+
+  try {
+    // 编辑和重新生成共用同一套“截断旧分支并重新发送”流程。
+    await chatStore.truncateAndResend(
+      targetConversationID,
+      message,
+      content,
+      modelStore.selectedModelId,
+    )
+
+    if (conversationId.value !== targetConversationID) {
+      return
+    }
+
+    await loadSelectedConversation(targetConversationID)
+    await conversationStore.loadConversations()
   } catch {
-    // Store 已保存错误信息。
+    // Store 已保存截断或重新生成时的错误信息。
   }
 }
 
 async function handleRetry(message: ChatMessage) {
-  const canRetry =
-    message.status === 'failed' ||
-    message.status === 'stopped'
-
-  if (isGenerating.value || !canRetry) {
+  if (isGenerating.value) {
     return
   }
 
-  // 先移除旧的失败消息，新的发送流程会创建临时消息。
-  chatStore.removeMessage(message.id)
+  const isTemporaryMessage =
+    message.status === 'failed' ||
+    message.status === 'stopped'
 
-  await handleSend(message.content)
+  if (isTemporaryMessage) {
+    // 临时消息没有数据库 ID，因此直接移除并重新发送。
+    chatStore.removeMessage(message.id)
+    await handleSend(message.content)
+    return
+  }
+
+  await regenerateFromUserMessage(message, message.content)
+}
+
+async function handleEdit(
+  message: ChatMessage,
+  content: string,
+) {
+  await regenerateFromUserMessage(message, content)
 }
 
 onMounted(async () => {
@@ -220,6 +322,11 @@ onMounted(async () => {
 
 watch(conversationId, async (id, previousID) => {
   if (id === previousID) {
+    return
+  }
+
+  if (preserveMessagesOnNextRouteChange.value) {
+    preserveMessagesOnNextRouteChange.value = false
     return
   }
 
@@ -249,8 +356,9 @@ watch(conversationId, async (id, previousID) => {
     </template>
 
     <template #header>
-      <AppHeader :title="currentConversation?.title ?? '新对话'" :can-export="hasMessages && !isGenerating"
-        @export="handleExportConversation" />
+      <AppHeader :title="currentConversation?.title ?? '新对话'"
+        :can-share="!!conversationId && hasMessages && !isGenerating" :can-export="hasMessages && !isGenerating"
+        @share="shareDialogOpen = true" @export="handleExportConversation" />
     </template>
 
     <section class="flex min-h-0 flex-1 flex-col">
@@ -267,7 +375,8 @@ watch(conversationId, async (id, previousID) => {
           </h2>
         </div>
 
-        <MessageList v-else :messages="messages" :is-generating="isGenerating" @retry="handleRetry" />
+        <MessageList v-else :messages="messages" :is-generating="isGenerating" @retry="handleRetry"
+          @edit="handleEdit" />
       </div>
 
       <div class="shrink-0 px-4 pb-4 pt-3">
@@ -285,5 +394,6 @@ watch(conversationId, async (id, previousID) => {
         </div>
       </div>
     </section>
+    <ShareDialog :open="shareDialogOpen" :conversation-id="conversationId ?? ''" @close="shareDialogOpen = false" />
   </MainLayout>
 </template>

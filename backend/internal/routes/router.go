@@ -4,6 +4,7 @@ package routes
 import (
 	"time"
 
+	_ "sy_chat/docs"
 	"sy_chat/internal/config"
 	"sy_chat/internal/handlers"
 	"sy_chat/internal/middleware"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 	"gorm.io/gorm"
 )
 
@@ -23,8 +26,9 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 	// 使用 gin.New 可以明确决定启用哪些全局中间件。
 	router := gin.New()
 
-	// Logger 记录请求，Recovery 防止 panic 导致整个服务退出。
-	router.Use(gin.Logger())
+	// Logger 记录请求，Recovery 防止 panic 导致整个服务退出。请求 ID 必须先于日志中间件执行。
+	router.Use(middleware.RequestID())
+	router.Use(middleware.RequestLogger())
 	router.Use(gin.Recovery())
 
 	router.Use(cors.New(cors.Config{
@@ -48,12 +52,24 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 			"Authorization",
 		},
 
+		ExposeHeaders: []string{
+			"X-Request-ID",
+		},
+
 		// 后续 JWT 存入 HttpOnly Cookie 时，浏览器需要携带凭证。
 		AllowCredentials: true,
 
 		// 浏览器可缓存预检请求，减少 OPTIONS 请求数量。
 		MaxAge: 12 * time.Hour,
 	}))
+
+	// Swagger 仅在非生产环境开放，避免生产环境直接暴露接口文档。
+	if cfg.AppEnv != "production" {
+		router.GET(
+			"/swagger/*any",
+			ginSwagger.WrapHandler(swaggerFiles.Handler),
+		)
+	}
 
 	messageRepository := repositories.NewMessageRepository(db)
 	aiProvider := newAIProvider(cfg)
@@ -104,6 +120,9 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 	// 所有业务接口统一使用 /api/v1 前缀，方便未来升级 API。
 	api := router.Group("/api/v1")
 	{
+		// 分享读取接口通过随机令牌授权，不要求登录。
+		api.GET("/shares/:token", conversationHandler.GetShared)
+
 		api.GET(
 			"/models",
 			middleware.RequireAuth(tokenManager),
@@ -141,8 +160,11 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 			conversationRoutes.POST("", conversationHandler.Create)
 			conversationRoutes.GET("", conversationHandler.List)
 			conversationRoutes.GET("/:id", conversationHandler.Get)
+			conversationRoutes.DELETE("/:id/messages/:messageId/tail", chatHandler.TruncateFromMessage)
 			conversationRoutes.PATCH("/:id", conversationHandler.UpdateTitle)
 			conversationRoutes.PATCH("/:id/pin", conversationHandler.UpdatePinned)
+			conversationRoutes.POST("/:id/share", conversationHandler.Share)
+			conversationRoutes.DELETE("/:id/share", conversationHandler.Unshare)
 			conversationRoutes.DELETE("/:id", conversationHandler.Delete)
 		}
 	}

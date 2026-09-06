@@ -21,6 +21,11 @@ const router = createRouter({
       },
     },
     {
+      path: '/share/:token',
+      name: 'public-share',
+      component: () => import('@/pages/PublicSharePage.vue'),
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/pages/LoginPage.vue'),
@@ -40,6 +45,10 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
+  if (!to.meta.requiresAuth && !to.meta.guestOnly) {
+    return
+  }
+
   const authStore = useAuthStore()
 
   // 浏览器刷新后，通过 /auth/me 恢复 Cookie 对应的用户。
