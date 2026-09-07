@@ -22,11 +22,12 @@ type CreateConversationRequest struct {
 
 // ConversationMessageData 描述对话详情中的单条消息。
 type ConversationMessageData struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	Thinking  *string   `json:"thinking,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID          string                  `json:"id"`
+	Role        string                  `json:"role"`
+	Content     string                  `json:"content"`
+	Thinking    *string                 `json:"thinking,omitempty"`
+	Attachments []models.FileAttachment `json:"attachments,omitempty"`
+	CreatedAt   time.Time               `json:"createdAt"`
 }
 
 // ConversationDetailData 描述包含消息记录的完整对话。
@@ -245,11 +246,12 @@ func (handler *ConversationHandler) Get(c *gin.Context) {
 		message := &conversation.Messages[index]
 
 		messages = append(messages, ConversationMessageData{
-			ID:        message.ID,
-			Role:      message.Role,
-			Content:   message.Content,
-			Thinking:  message.Thinking,
-			CreatedAt: message.CreatedAt,
+			ID:          message.ID,
+			Role:        message.Role,
+			Content:     message.Content,
+			Thinking:    message.Thinking,
+			Attachments: decodeMessageAttachments(message),
+			CreatedAt:   message.CreatedAt,
 		})
 	}
 

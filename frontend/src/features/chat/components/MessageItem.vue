@@ -7,6 +7,7 @@ import {
     Copy,
     CircleAlert,
     CircleStop,
+    FileText,
     RotateCcw,
     Pencil,
 } from '@lucide/vue'
@@ -73,6 +74,10 @@ function submitEditing(content: string) {
     emit('edit', props.message, content)
 }
 
+function formatFileSize(size: number): string {
+    return `${(size / 1024).toFixed(1)} KB`
+}
+
 const { isCopying, copyFeedback, copyText } = useClipboard()
 
 function copyMessage() {
@@ -89,6 +94,24 @@ function copyMessage() {
         </div>
 
         <div class="flex min-w-0 max-w-[80%] flex-col gap-1.5" :class="isUser ? 'items-end' : 'items-start'">
+            <div v-if="isUser && message.attachments?.length" class="flex max-w-full flex-wrap justify-end gap-2">
+                <div v-for="(file, index) in message.attachments" :key="`${file.name}-${index}`"
+                    class="flex min-w-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs" :class="file.type === 'md'
+                            ? 'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-800 dark:bg-orange-950 dark:text-orange-300'
+                            : 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300'
+                        " :title="file.name">
+                    <FileText :size="14" class="shrink-0" aria-hidden="true" />
+
+                    <span class="max-w-48 truncate font-medium">
+                        {{ file.name }}
+                    </span>
+
+                    <span class="shrink-0 opacity-70">
+                        {{ formatFileSize(file.size) }}
+                    </span>
+                </div>
+            </div>
+
             <MessageEditor v-if="isUser && isEditing" :original-content="message.content" :disabled="retryDisabled"
                 @cancel="cancelEditing" @submit="submitEditing" />
 

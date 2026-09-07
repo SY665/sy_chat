@@ -1,3 +1,5 @@
+import type { FileAttachment } from '@/features/chat/types'
+
 export type ConversationMessageRole =
   | 'user'
   | 'assistant'
@@ -9,6 +11,7 @@ export interface ConversationMessage {
   role: ConversationMessageRole
   content: string
   thinking?: string
+  attachments?: FileAttachment[]
   createdAt: string
 }
 

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 
-import type { ChatMessage } from "../types";
+import type { ChatMessage, FileAttachment } from "../types";
 import { ApiRequestError, isAbortError } from "@/lib/api/client";
 import {
     requestChatStream,
@@ -26,6 +26,7 @@ export const useChatStore = defineStore('chat', {
             content: string,
             modelId = '',
             enableThinking = false,
+            attachments: FileAttachment[] = [],
         ) {
             const value = content.trim()
 
@@ -45,6 +46,7 @@ export const useChatStore = defineStore('chat', {
                 id: pendingUserID,
                 role: 'user',
                 content: value,
+                attachments: attachments.length > 0 ? [...attachments] : undefined,
                 createdAt: new Date().toISOString(),
                 status: 'sending',
             }
@@ -103,6 +105,7 @@ export const useChatStore = defineStore('chat', {
                         }
                     },
                     enableThinking,
+                    attachments,
                 )
 
                 const userIndex = this.messages.findIndex(
@@ -220,6 +223,7 @@ export const useChatStore = defineStore('chat', {
                     content,
                     modelId,
                     enableThinking,
+                    message.attachments ?? [],
                 )
             } catch (error) {
                 this.errorMessage = getErrorMessage(error)

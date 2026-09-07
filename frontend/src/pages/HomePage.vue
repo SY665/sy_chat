@@ -15,7 +15,7 @@ import MessageList from '@/features/chat/components/MessageList.vue'
 import { useChatStore } from '@/features/chat/stores/chat'
 import { useConversationStore } from '@/features/conversation/stores/conversation'
 import { ApiRequestError, isAbortError } from '@/lib/api/client'
-import type { ChatMessage } from '@/features/chat/types'
+import type { ChatMessage, FileAttachment, } from '@/features/chat/types'
 import { useAppStore } from '@/stores/app'
 import { exportConversationAsMarkdown } from '@/features/conversation/utils/exportConversation'
 import ShareDialog from '@/features/share/components/ShareDialog.vue'
@@ -73,6 +73,7 @@ async function loadSelectedConversation(id: string) {
         role: message.role === 'user' ? 'user' as const : 'assistant' as const,
         content: message.content,
         thinking: message.thinking,
+        attachments: message.attachments,
         createdAt: message.createdAt,
       }))
 
@@ -184,7 +185,7 @@ async function reloadStoppedConversation(
   }
 }
 
-async function handleSend(content: string) {
+async function handleSend(content: string, attachments: FileAttachment[] = [],) {
   const previousMessageCount = messages.value.filter(
     (message) => message.status === undefined,
   ).length
@@ -210,7 +211,7 @@ async function handleSend(content: string) {
         },
       })
     }
-    await chatStore.sendMessage(targetConversationID, content, modelId, enableThinking,)
+    await chatStore.sendMessage(targetConversationID, content, modelId, enableThinking,attachments,)
 
     if (conversationId.value !== targetConversationID) {
       return

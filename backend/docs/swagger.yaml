@@ -25,6 +25,10 @@ definitions:
     type: object
   handlers.ChatMessageData:
     properties:
+      attachments:
+        items:
+          $ref: '#/definitions/models.FileAttachment'
+        type: array
       content:
         type: string
       createdAt:
@@ -33,11 +37,19 @@ definitions:
         type: string
       role:
         type: string
+      thinking:
+        type: string
     type: object
   handlers.ChatRequest:
     properties:
+      attachments:
+        items:
+          $ref: '#/definitions/models.FileAttachment'
+        type: array
       conversationId:
         type: string
+      enableThinking:
+        type: boolean
       message:
         type: string
       modelId:
@@ -86,6 +98,10 @@ definitions:
     type: object
   handlers.ConversationMessageData:
     properties:
+      attachments:
+        items:
+          $ref: '#/definitions/models.FileAttachment'
+        type: array
       content:
         type: string
       createdAt:
@@ -168,6 +184,8 @@ definitions:
         type: string
       provider:
         type: string
+      supportsThinking:
+        type: boolean
     type: object
   handlers.ModelListData:
     properties:
@@ -245,6 +263,17 @@ definitions:
     required:
     - title
     type: object
+  models.FileAttachment:
+    properties:
+      content:
+        type: string
+      name:
+        type: string
+      size:
+        type: integer
+      type:
+        type: string
+    type: object
   response.APIError:
     properties:
       code:
@@ -268,6 +297,48 @@ info:
   title: SY Chat API
   version: "1.0"
 paths:
+  /attachments:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 读取不超过 1 MB 的 .txt 或 .md 文件。
+      parameters:
+      - description: 文本附件
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Envelope'
+            - properties:
+                data:
+                  $ref: '#/definitions/models.FileAttachment'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Envelope'
+      summary: 上传文本附件
+      tags:
+      - Attachments
   /auth/login:
     post:
       consumes:
@@ -421,8 +492,16 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/response.Envelope'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/response.Envelope'
         "500":
           description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "501":
+          description: Not Implemented
           schema:
             $ref: '#/definitions/response.Envelope'
       summary: 发送聊天消息

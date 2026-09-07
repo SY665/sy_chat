@@ -46,8 +46,10 @@ export async function apiFetch(
 ): Promise<Response> {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
   const headers = new Headers(options.headers)
+  const isFormData = options.body instanceof FormData
 
-  if (options.body && !headers.has('Content-Type')) {
+  // FormData 的 Content-Type 必须由浏览器生成，其中包含 multipart boundary。
+  if (options.body && !isFormData && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 

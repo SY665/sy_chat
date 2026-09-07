@@ -22,17 +22,19 @@ type ChatRequest struct {
 	ConversationID string `json:"conversationId" binding:"required"`
 	Message        string `json:"message" binding:"required"`
 	// 允许旧版请求不传模型，由 Service 使用默认模型。
-	ModelID        string `json:"modelId"`
-	EnableThinking bool   `json:"enableThinking"`
+	ModelID        string                  `json:"modelId"`
+	EnableThinking bool                    `json:"enableThinking"`
+	Attachments    []models.FileAttachment `json:"attachments"`
 }
 
 // ChatMessageData 描述聊天接口返回的一条已保存消息。
 type ChatMessageData struct {
-	ID        string  `json:"id"`
-	Role      string  `json:"role"`
-	Content   string  `json:"content"`
-	Thinking  *string `json:"thinking,omitempty"`
-	CreatedAt string  `json:"createdAt"`
+	ID          string                  `json:"id"`
+	Role        string                  `json:"role"`
+	Content     string                  `json:"content"`
+	Thinking    *string                 `json:"thinking,omitempty"`
+	Attachments []models.FileAttachment `json:"attachments,omitempty"`
+	CreatedAt   string                  `json:"createdAt"`
 }
 
 // ChatData 包含一次问答产生的用户消息和 AI 消息。
@@ -68,7 +70,7 @@ func NewChatHandler(chatService *chat.Service) *ChatHandler {
 // @Produce json
 // @Param request body ChatRequest true "聊天参数"
 // @Success 200 {object} response.Envelope{data=ChatData}
-// @Failure 400,401,404,500 {object} response.Envelope
+// @Failure 400,401,404,413,500,501 {object} response.Envelope
 // @Router /chat [post]
 func (handler *ChatHandler) Send(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
@@ -97,6 +99,7 @@ func (handler *ChatHandler) Send(c *gin.Context) {
 			Content:        request.Message,
 			ModelID:        request.ModelID,
 			EnableThinking: request.EnableThinking,
+			Attachments:    request.Attachments,
 		},
 	)
 	if err != nil {
@@ -148,6 +151,7 @@ func (handler *ChatHandler) Stream(c *gin.Context) {
 			Content:        request.Message,
 			ModelID:        request.ModelID,
 			EnableThinking: request.EnableThinking,
+			Attachments:    request.Attachments,
 		},
 		func(chunk chat.StreamChunk) error {
 			if !streamStarted {
@@ -323,6 +327,30 @@ func (handler *ChatHandler) handleError(c *gin.Context, err error) {
 			"当前模型不支持思考模式",
 		)
 
+	case errors.Is(err, chat.ErrTooManyAttachments):
+		response.Error(
+			c,
+			http.StatusBadRequest,
+			"TOO_MANY_ATTACHMENTS",
+			"每条消息最多添加 5 个附件",
+		)
+
+	case errors.Is(err, chat.ErrInvalidAttachment):
+		response.Error(
+			c,
+			http.StatusBadRequest,
+			"INVALID_ATTACHMENT",
+			"仅支持 UTF-8 编码的 .txt 和 .md 附件",
+		)
+
+	case errors.Is(err, chat.ErrAttachmentTooLarge):
+		response.Error(
+			c,
+			http.StatusRequestEntityTooLarge,
+			"ATTACHMENT_TOO_LARGE",
+			"单个附件不能超过 1 MB",
+		)
+
 	case errors.Is(err, chat.ErrStreamingNotSupported):
 		response.Error(
 			c,
@@ -344,12 +372,32 @@ func (handler *ChatHandler) handleError(c *gin.Context, err error) {
 
 func newChatMessageData(message *models.Message) ChatMessageData {
 	return ChatMessageData{
-		ID:        message.ID,
-		Role:      message.Role,
-		Content:   message.Content,
-		Thinking:  message.Thinking,
-		CreatedAt: message.CreatedAt.Format(time.RFC3339Nano),
+		ID:          message.ID,
+		Role:        message.Role,
+		Content:     message.Content,
+		Thinking:    message.Thinking,
+		Attachments: decodeMessageAttachments(message),
+		CreatedAt:   message.CreatedAt.Format(time.RFC3339Nano),
 	}
+}
+
+// 将数据库中的附件 JSON 转换为接口可以直接返回的结构。
+func decodeMessageAttachments(
+	message *models.Message,
+) []models.FileAttachment {
+	attachments, err := models.DecodeFileAttachments(message.Attachments)
+	if err != nil {
+		slog.Warn(
+			"decode message attachments",
+			"message_id",
+			message.ID,
+			"error",
+			err,
+		)
+		return nil
+	}
+
+	return attachments
 }
 
 func prepareSSEHeaders(c *gin.Context) {

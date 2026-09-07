@@ -4,16 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"sy_chat/internal/models"
 	"sy_chat/internal/services/ai"
 	"time"
 	"unicode/utf8"
+
+	"gorm.io/datatypes"
 )
 
 const (
-	MaxMessageLength   = 20000
-	maxHistoryMessages = 8
+	MaxMessageLength               = 20000
+	maxHistoryMessages             = 8
+	maxAttachmentsPerMessage       = 5
+	maxAttachmentNameLength        = 255
+	maxAttachmentSize        int64 = 1 << 20
 )
 
 var (
@@ -25,6 +31,9 @@ var (
 	ErrModelUnavailable       = errors.New("requested model is unavailable")
 	ErrMessageIDRequired      = errors.New("message ID is required")
 	ErrThinkingNotSupported   = errors.New("thinking mode is not supported by requested model")
+	ErrInvalidAttachment      = errors.New("attachment is invalid")
+	ErrAttachmentTooLarge     = errors.New("attachment is too large")
+	ErrTooManyAttachments     = errors.New("too many attachments")
 )
 
 // Repository 描述聊天业务需要的消息数据库操作。
@@ -58,6 +67,7 @@ type SendInput struct {
 	Content        string
 	ModelID        string
 	EnableThinking bool
+	Attachments    []models.FileAttachment
 }
 
 // TruncateInput 描述从某条用户消息开始截断对话所需的数据。
@@ -144,6 +154,16 @@ func (service *Service) Send(
 		return nil, ErrMessageTooLong
 	}
 
+	attachments, err := normalizeAttachments(input.Attachments)
+	if err != nil {
+		return nil, err
+	}
+
+	attachmentsJSON, err := models.EncodeFileAttachments(attachments)
+	if err != nil {
+		return nil, fmt.Errorf("encode message attachments: %w", err)
+	}
+
 	// 未指定模型时使用后端默认值，指定值必须在可用范围内。
 	modelID, err := service.resolveModelID(input.ModelID)
 	if err != nil {
@@ -170,7 +190,11 @@ func (service *Service) Send(
 		)
 	}
 
-	contextMessages := buildContextMessages(history, content)
+	contextMessages := buildContextMessages(
+		history,
+		content,
+		attachments,
+	)
 
 	aiResponse, err := service.provider.Generate(
 		ctx,
@@ -204,6 +228,7 @@ func (service *Service) Send(
 		Role:           models.MessageRoleUser,
 		Content:        content,
 		CreatedAt:      now,
+		Attachments:    attachmentsJSON,
 	}
 
 	assistantMessage := &models.Message{
@@ -261,6 +286,16 @@ func (service *Service) Stream(
 		return nil, ErrMessageTooLong
 	}
 
+	attachments, err := normalizeAttachments(input.Attachments)
+	if err != nil {
+		return nil, err
+	}
+
+	attachmentsJSON, err := models.EncodeFileAttachments(attachments)
+	if err != nil {
+		return nil, fmt.Errorf("encode message attachments: %w", err)
+	}
+
 	// 未指定模型时使用后端默认值，指定值必须在可用范围内。
 	modelID, err := service.resolveModelID(input.ModelID)
 	if err != nil {
@@ -292,7 +327,11 @@ func (service *Service) Stream(
 		return nil, ErrStreamingNotSupported
 	}
 
-	contextMessages := buildContextMessages(history, content)
+	contextMessages := buildContextMessages(
+		history,
+		content,
+		attachments,
+	)
 	var replyBuilder strings.Builder
 	var thinkingBuilder strings.Builder
 
@@ -335,6 +374,7 @@ func (service *Service) Stream(
 				userID,
 				conversationID,
 				content,
+				attachmentsJSON,
 				partialReply,
 				partialThinking,
 			); saveErr != nil {
@@ -369,6 +409,7 @@ func (service *Service) Stream(
 		Role:           models.MessageRoleUser,
 		Content:        content,
 		CreatedAt:      now,
+		Attachments:    attachmentsJSON,
 	}
 
 	assistantMessage := &models.Message{
@@ -404,6 +445,7 @@ func (service *Service) saveInterruptedStream(
 	userID string,
 	conversationID string,
 	content string,
+	attachmentsJSON datatypes.JSON,
 	partialReply string,
 	partialThinking string,
 ) error {
@@ -426,6 +468,7 @@ func (service *Service) saveInterruptedStream(
 		Role:           models.MessageRoleUser,
 		Content:        content,
 		CreatedAt:      now,
+		Attachments:    attachmentsJSON,
 	}
 
 	var assistantMessage *models.Message
@@ -516,11 +559,104 @@ func (service *Service) validateThinkingMode(
 	return nil
 }
 
+// normalizeAttachments 重新校验客户端提交的数据，并生成可信附件。
+// 文件类型、大小和文件名不能只依赖此前上传接口的返回值。
+func normalizeAttachments(
+	attachments []models.FileAttachment,
+) ([]models.FileAttachment, error) {
+	if len(attachments) == 0 {
+		return nil, nil
+	}
+
+	if len(attachments) > maxAttachmentsPerMessage {
+		return nil, ErrTooManyAttachments
+	}
+
+	normalized := make(
+		[]models.FileAttachment,
+		0,
+		len(attachments),
+	)
+
+	for _, attachment := range attachments {
+		name := strings.TrimSpace(
+			path.Base(
+				strings.ReplaceAll(attachment.Name, "\\", "/"),
+			),
+		)
+
+		if name == "" ||
+			name == "." ||
+			utf8.RuneCountInString(name) > maxAttachmentNameLength {
+			return nil, ErrInvalidAttachment
+		}
+
+		var attachmentType string
+		switch strings.ToLower(path.Ext(name)) {
+		case ".txt":
+			attachmentType = models.AttachmentTypeText
+		case ".md":
+			attachmentType = models.AttachmentTypeMarkdown
+		default:
+			return nil, ErrInvalidAttachment
+		}
+
+		if !utf8.ValidString(attachment.Content) {
+			return nil, ErrInvalidAttachment
+		}
+
+		size := int64(len(attachment.Content))
+		if size > maxAttachmentSize {
+			return nil, ErrAttachmentTooLarge
+		}
+
+		normalized = append(normalized, models.FileAttachment{
+			Name:    name,
+			Type:    attachmentType,
+			Size:    size,
+			Content: attachment.Content,
+		})
+	}
+
+	return normalized, nil
+}
+
+// appendAttachments 只扩展发送给模型的文本，不修改用户消息原始正文。
+func appendAttachments(
+	content string,
+	attachments []models.FileAttachment,
+) string {
+	if len(attachments) == 0 {
+		return content
+	}
+
+	var builder strings.Builder
+	builder.WriteString(content)
+
+	for _, attachment := range attachments {
+		language := "text"
+		if attachment.Type == models.AttachmentTypeMarkdown {
+			language = "markdown"
+		}
+
+		builder.WriteString("\n\n---\n**附件: ")
+		builder.WriteString(attachment.Name)
+		builder.WriteString("**\n```")
+		builder.WriteString(language)
+		builder.WriteString("\n")
+		builder.WriteString(attachment.Content)
+		builder.WriteString("\n```")
+	}
+
+	return builder.String()
+}
+
 // buildContextMessages 将数据库模型转换为 AI Provider 使用的消息格式。
 // 工具消息暂未接入，因此这里只传递模型当前能够理解的角色。
 func buildContextMessages(
 	history []models.Message,
 	currentContent string,
+	attachments []models.FileAttachment,
 ) []ai.Message {
 	messages := make(
 		[]ai.Message,
@@ -541,8 +677,11 @@ func buildContextMessages(
 	}
 
 	messages = append(messages, ai.Message{
-		Role:    models.MessageRoleUser,
-		Content: currentContent,
+		Role: models.MessageRoleUser,
+		Content: appendAttachments(
+			currentContent,
+			attachments,
+		),
 	})
 
 	return messages

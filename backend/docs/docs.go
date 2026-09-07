@@ -15,6 +15,74 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/attachments": {
+            "post": {
+                "description": "读取不超过 1 MB 的 .txt 或 .md 文件。",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Attachments"
+                ],
+                "summary": "上传文本附件",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "文本附件",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/response.Envelope"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/models.FileAttachment"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    }
+                }
+            }
+        },
         "/auth/login": {
             "post": {
                 "description": "验证用户名或邮箱和密码，并写入 sy_chat_session HttpOnly Cookie。",
@@ -268,8 +336,20 @@ const docTemplate = `{
                             "$ref": "#/definitions/response.Envelope"
                         }
                     },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
+                    "501": {
+                        "description": "Not Implemented",
                         "schema": {
                             "$ref": "#/definitions/response.Envelope"
                         }
@@ -1100,6 +1180,12 @@ const docTemplate = `{
         "handlers.ChatMessageData": {
             "type": "object",
             "properties": {
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.FileAttachment"
+                    }
+                },
                 "content": {
                     "type": "string"
                 },
@@ -1111,6 +1197,9 @@ const docTemplate = `{
                 },
                 "role": {
                     "type": "string"
+                },
+                "thinking": {
+                    "type": "string"
                 }
             }
         },
@@ -1121,8 +1210,17 @@ const docTemplate = `{
                 "message"
             ],
             "properties": {
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.FileAttachment"
+                    }
+                },
                 "conversationId": {
                     "type": "string"
+                },
+                "enableThinking": {
+                    "type": "boolean"
                 },
                 "message": {
                     "type": "string"
@@ -1193,6 +1291,12 @@ const docTemplate = `{
         "handlers.ConversationMessageData": {
             "type": "object",
             "properties": {
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.FileAttachment"
+                    }
+                },
                 "content": {
                     "type": "string"
                 },
@@ -1319,6 +1423,9 @@ const docTemplate = `{
                 },
                 "provider": {
                     "type": "string"
+                },
+                "supportsThinking": {
+                    "type": "boolean"
                 }
             }
         },
@@ -1432,6 +1539,23 @@ const docTemplate = `{
             ],
             "properties": {
                 "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.FileAttachment": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "integer"
+                },
+                "type": {
                     "type": "string"
                 }
             }

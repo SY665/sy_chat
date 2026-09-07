@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@/features/chat/types'
+import type { ChatMessage, FileAttachment } from '@/features/chat/types'
 import type { ApiEnvelope } from './types';
 
 import { apiFetch, apiRequest, ApiRequestError } from "./client";
@@ -9,6 +9,7 @@ interface ChatRequest {
     message: string
     modelId: string
     enableThinking: boolean
+    attachments: FileAttachment[]
 }
 
 interface ChatChunkData {
@@ -42,6 +43,7 @@ export function requestChatReply(
     message: string,
     modelId = '',
     enableThinking = false,
+    attachments: FileAttachment[] = [],
 ): Promise<ChatResponse> {
     return apiRequest<ChatResponse>('/chat', {
         method: 'POST',
@@ -50,6 +52,7 @@ export function requestChatReply(
             message,
             modelId,
             enableThinking,
+            attachments,
         } satisfies ChatRequest),
     })
 }
@@ -83,6 +86,7 @@ export async function requestChatStream(
     modelId = '',
     onThinking?: (content: string) => void,
     enableThinking = false,
+    attachments: FileAttachment[] = [],
 ): Promise<ChatResponse> {
     const response = await apiFetch('/chat/stream', {
         method: 'POST',
@@ -92,6 +96,7 @@ export async function requestChatStream(
             message,
             modelId,
             enableThinking,
+            attachments,
         } satisfies ChatRequest),
     })
 

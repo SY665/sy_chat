@@ -133,6 +133,13 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 			modelHandler.List,
 		)
 		api.GET("/health", handlers.Health)
+
+		api.POST(
+			"/attachments",
+			middleware.RequireAuth(tokenManager),
+			handlers.UploadAttachment,
+		)
+
 		api.POST(
 			"/chat",
 			middleware.RequireAuth(tokenManager),

@@ -4,10 +4,20 @@ export type MessageStatus =
   | 'failed'
   | 'stopped'
 
+export type FileAttachmentType = 'txt' | 'md'
+
+export interface FileAttachment {
+  name: string
+  type: FileAttachmentType
+  size: number
+  content: string
+}
+
 export interface ChatMessage {
   id: string
   role: MessageRole
   content: string
+  attachments?: FileAttachment[]
   thinking?: string
   createdAt: string
 
