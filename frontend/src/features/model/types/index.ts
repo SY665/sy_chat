@@ -4,6 +4,7 @@ export interface AIModel {
     id: string
     name: string
     provider: AIProvider
+    supportsThinking: boolean
 }
 
 // 对应后端响应中的 data，不包含外层 success 字段。

@@ -19,12 +19,14 @@ type Message struct {
 }
 
 type GenerateRequest struct {
-	Model    string
-	Messages []Message
+	Model          string
+	Messages       []Message
+	EnableThinking bool
 }
 
 type GenerateResponse struct {
-	Content string
+	Content  string
+	Thinking string
 }
 
 type Provider interface {
@@ -34,9 +36,14 @@ type Provider interface {
 	) (GenerateResponse, error)
 }
 
-// StreamHandler 接收模型每次生成的一小段增量文本。
-// 返回错误可以及时停止上游请求，例如浏览器已经断开连接。
-type StreamHandler func(content string) error
+// StreamChunk 表示模型一次返回的增量内容。
+type StreamChunk struct {
+	Content  string
+	Thinking string
+}
+
+// StreamHandler 接收模型每次生成的增量内容。
+type StreamHandler func(chunk StreamChunk) error
 
 // StreamingProvider 描述支持流式生成的 AI Provider。
 // 它保留普通 Provider 能力，便于流式接口失败时复用非流式逻辑。
@@ -118,7 +125,9 @@ func (provider *LocalProvider) Stream(
 			end = len(characters)
 		}
 
-		if err := onChunk(string(characters[start:end])); err != nil {
+		if err := onChunk(StreamChunk{
+			Content: string(characters[start:end]),
+		}); err != nil {
 			return fmt.Errorf(
 				"handle local stream chunk: %w",
 				err,

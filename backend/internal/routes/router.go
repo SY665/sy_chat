@@ -76,10 +76,12 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 
 	defaultModelID := cfg.SiliconFlowModel
 	availableModelIDs := cfg.SiliconFlowModels
+	thinkingModelIDs := cfg.SiliconFlowThinkingModels
 
 	if cfg.AIProvider == "local" {
 		defaultModelID = "local"
 		availableModelIDs = []string{"local"}
+		thinkingModelIDs = nil
 	}
 
 	chatService := chat.NewService(
@@ -87,6 +89,7 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 		aiProvider,
 		defaultModelID,
 		availableModelIDs,
+		thinkingModelIDs,
 	)
 	chatHandler := handlers.NewChatHandler(chatService)
 
@@ -94,6 +97,7 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 		cfg.AIProvider,
 		availableModelIDs,
 		defaultModelID,
+		thinkingModelIDs,
 	)
 
 	userRepository := repositories.NewUserRepository(db)

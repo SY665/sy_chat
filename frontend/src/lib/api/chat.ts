@@ -8,6 +8,7 @@ interface ChatRequest {
     conversationId: string
     message: string
     modelId: string
+    enableThinking: boolean
 }
 
 interface ChatChunkData {
@@ -40,6 +41,7 @@ export function requestChatReply(
     conversationId: string,
     message: string,
     modelId = '',
+    enableThinking = false,
 ): Promise<ChatResponse> {
     return apiRequest<ChatResponse>('/chat', {
         method: 'POST',
@@ -47,6 +49,7 @@ export function requestChatReply(
             conversationId,
             message,
             modelId,
+            enableThinking,
         } satisfies ChatRequest),
     })
 }
@@ -78,6 +81,8 @@ export async function requestChatStream(
     onChunk: (content: string) => void,
     signal?: AbortSignal,
     modelId = '',
+    onThinking?: (content: string) => void,
+    enableThinking = false,
 ): Promise<ChatResponse> {
     const response = await apiFetch('/chat/stream', {
         method: 'POST',
@@ -86,6 +91,7 @@ export async function requestChatStream(
             conversationId,
             message,
             modelId,
+            enableThinking,
         } satisfies ChatRequest),
     })
 
@@ -108,6 +114,20 @@ export async function requestChatStream(
     const completed: { value?: ChatResponse } = {}
 
     await readEventStream(response, (event) => {
+        if (event.event === 'thinking') {
+            const data = parseEventData<ChatChunkData>(
+                event.data,
+                requestId,
+            )
+
+            if (typeof data.content !== 'string') {
+                throw invalidStreamError(requestId)
+            }
+
+            onThinking?.(data.content)
+            return
+        }
+
         if (event.event === 'chunk') {
             const data = parseEventData<ChatChunkData>(event.data, requestId)
 

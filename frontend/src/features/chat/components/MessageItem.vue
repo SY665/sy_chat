@@ -12,6 +12,7 @@ import {
 } from '@lucide/vue'
 
 import type { ChatMessage } from '../types'
+import ThinkingPanel from './ThinkingPanel.vue'
 import MessageEditor from './MessageEditor.vue'
 import MarkdownContent from './MarkdownContent.vue'
 
@@ -97,7 +98,12 @@ function copyMessage() {
                 {{ message.content }}
             </div>
 
-            <MarkdownContent v-else :content="message.content" class="w-full min-w-0 py-3 text-sm" />
+            <div v-else class="w-full min-w-0">
+                <ThinkingPanel v-if="message.thinking" :content="message.thinking" :default-open="retryDisabled" />
+
+                <MarkdownContent v-if="message.content" :content="message.content"
+                    class="w-full min-w-0 py-3 text-sm" />
+            </div>
 
             <div v-if="message.content && !isEditing" class="flex max-w-full items-center gap-2">
                 <button type="button"

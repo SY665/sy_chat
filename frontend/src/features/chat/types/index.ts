@@ -8,6 +8,7 @@ export interface ChatMessage {
   id: string
   role: MessageRole
   content: string
+  thinking?: string
   createdAt: string
 
   // 只有前端临时消息需要状态，数据库消息不包含该字段。

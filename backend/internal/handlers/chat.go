@@ -22,15 +22,17 @@ type ChatRequest struct {
 	ConversationID string `json:"conversationId" binding:"required"`
 	Message        string `json:"message" binding:"required"`
 	// 允许旧版请求不传模型，由 Service 使用默认模型。
-	ModelID string `json:"modelId"`
+	ModelID        string `json:"modelId"`
+	EnableThinking bool   `json:"enableThinking"`
 }
 
 // ChatMessageData 描述聊天接口返回的一条已保存消息。
 type ChatMessageData struct {
-	ID        string `json:"id"`
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	CreatedAt string `json:"createdAt"`
+	ID        string  `json:"id"`
+	Role      string  `json:"role"`
+	Content   string  `json:"content"`
+	Thinking  *string `json:"thinking,omitempty"`
+	CreatedAt string  `json:"createdAt"`
 }
 
 // ChatData 包含一次问答产生的用户消息和 AI 消息。
@@ -94,6 +96,7 @@ func (handler *ChatHandler) Send(c *gin.Context) {
 			ConversationID: request.ConversationID,
 			Content:        request.Message,
 			ModelID:        request.ModelID,
+			EnableThinking: request.EnableThinking,
 		},
 	)
 	if err != nil {
@@ -144,16 +147,31 @@ func (handler *ChatHandler) Stream(c *gin.Context) {
 			ConversationID: request.ConversationID,
 			Content:        request.Message,
 			ModelID:        request.ModelID,
+			EnableThinking: request.EnableThinking,
 		},
-		func(content string) error {
+		func(chunk chat.StreamChunk) error {
 			if !streamStarted {
 				prepareSSEHeaders(c)
 				streamStarted = true
 			}
 
-			return writeSSEEvent(c, "chunk", gin.H{
-				"content": content,
-			})
+			if chunk.Thinking != "" {
+				if err := writeSSEEvent(c, "thinking", gin.H{
+					"content": chunk.Thinking,
+				}); err != nil {
+					return err
+				}
+			}
+
+			if chunk.Content != "" {
+				if err := writeSSEEvent(c, "chunk", gin.H{
+					"content": chunk.Content,
+				}); err != nil {
+					return err
+				}
+			}
+
+			return nil
 		},
 	)
 	if err != nil {
@@ -297,6 +315,14 @@ func (handler *ChatHandler) handleError(c *gin.Context, err error) {
 			"所选模型不可用，请刷新模型列表",
 		)
 
+	case errors.Is(err, chat.ErrThinkingNotSupported):
+		response.Error(
+			c,
+			http.StatusBadRequest,
+			"THINKING_NOT_SUPPORTED",
+			"当前模型不支持思考模式",
+		)
+
 	case errors.Is(err, chat.ErrStreamingNotSupported):
 		response.Error(
 			c,
@@ -321,6 +347,7 @@ func newChatMessageData(message *models.Message) ChatMessageData {
 		ID:        message.ID,
 		Role:      message.Role,
 		Content:   message.Content,
+		Thinking:  message.Thinking,
 		CreatedAt: message.CreatedAt.Format(time.RFC3339Nano),
 	}
 }

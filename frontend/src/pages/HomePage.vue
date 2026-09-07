@@ -10,6 +10,7 @@ import MainLayout from '@/components/layout/MainLayout.vue'
 import ChatInput from '@/features/chat/components/ChatInput.vue'
 import ModelSelect from '@/features/model/components/ModelSelect.vue'
 import { useModelStore } from '@/features/model/stores/model'
+import ThinkingToggle from '@/features/model/components/ThinkingToggle.vue'
 import MessageList from '@/features/chat/components/MessageList.vue'
 import { useChatStore } from '@/features/chat/stores/chat'
 import { useConversationStore } from '@/features/conversation/stores/conversation'
@@ -71,6 +72,7 @@ async function loadSelectedConversation(id: string) {
         id: message.id,
         role: message.role === 'user' ? 'user' as const : 'assistant' as const,
         content: message.content,
+        thinking: message.thinking,
         createdAt: message.createdAt,
       }))
 
@@ -188,6 +190,7 @@ async function handleSend(content: string) {
   ).length
   // 在异步创建会话之前记录模型，整个请求使用同一个选择。
   const modelId = modelStore.selectedModelId
+  const enableThinking = modelStore.effectiveThinkingEnabled
   let targetConversationID = conversationId.value
   let createdConversationForSend = false
 
@@ -207,7 +210,7 @@ async function handleSend(content: string) {
         },
       })
     }
-    await chatStore.sendMessage(targetConversationID, content, modelId)
+    await chatStore.sendMessage(targetConversationID, content, modelId, enableThinking,)
 
     if (conversationId.value !== targetConversationID) {
       return
@@ -262,13 +265,16 @@ async function regenerateFromUserMessage(
     return
   }
 
+  const modelId = modelStore.selectedModelId
+  const enableThinking = modelStore.effectiveThinkingEnabled
   try {
     // 编辑和重新生成共用同一套“截断旧分支并重新发送”流程。
     await chatStore.truncateAndResend(
       targetConversationID,
       message,
       content,
-      modelStore.selectedModelId,
+      modelId,
+      enableThinking,
     )
 
     if (conversationId.value !== targetConversationID) {
@@ -381,7 +387,11 @@ watch(conversationId, async (id, previousID) => {
 
       <div class="shrink-0 px-4 pb-4 pt-3">
         <div class="mx-auto w-full max-w-3xl">
-          <ModelSelect class="mb-2" :disabled="isGenerating || isCreating" />
+          <div class="mb-2 flex min-w-0 items-center justify-between gap-2">
+            <ModelSelect full-width class="min-w-0 flex-1" :disabled="isGenerating || isCreating" />
+
+            <ThinkingToggle class="shrink-0" :disabled="isGenerating || isCreating" />
+          </div>
           <ChatInput :is-generating="isGenerating" @send="handleSend" @stop="chatStore.stopGenerating" />
 
           <p v-if="errorMessage" class="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">

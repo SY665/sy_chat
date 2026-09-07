@@ -24,19 +24,20 @@ const (
 )
 
 type Config struct {
-	AppEnv             string
-	ServerPort         string
-	FrontendOrigin     string
-	DatabaseDSN        string
-	JWTSecret          string
-	JWTExpiresIn       time.Duration
-	CookieSecure       bool
-	AIProvider         string
-	SiliconFlowAPIKey  string
-	SiliconFlowBaseURL string
-	SiliconFlowModel   string
-	SiliconFlowModels  []string
-	AIRequestTimeout   time.Duration
+	AppEnv                    string
+	ServerPort                string
+	FrontendOrigin            string
+	DatabaseDSN               string
+	JWTSecret                 string
+	JWTExpiresIn              time.Duration
+	CookieSecure              bool
+	AIProvider                string
+	SiliconFlowAPIKey         string
+	SiliconFlowBaseURL        string
+	SiliconFlowModel          string
+	SiliconFlowModels         []string
+	SiliconFlowThinkingModels []string
+	AIRequestTimeout          time.Duration
 }
 
 func Load() (Config, error) {
@@ -128,6 +129,11 @@ func Load() (Config, error) {
 		}
 	}
 
+	// 思考能力单独配置，避免通过模型名称猜测模型行为。
+	siliconFlowThinkingModels := parseModelIDs(
+		os.Getenv("SILICONFLOW_THINKING_MODELS"),
+	)
+
 	return Config{
 		AppEnv:            getEnv("APP_ENV", defaultAppEnv),
 		ServerPort:        getEnv("SERVER_PORT", defaultServerPort),
@@ -142,9 +148,10 @@ func Load() (Config, error) {
 			"SILICONFLOW_BASE_URL",
 			defaultSiliconFlowBaseURL,
 		),
-		SiliconFlowModel:  siliconFlowModel,
-		SiliconFlowModels: siliconFlowModels,
-		AIRequestTimeout:  aiRequestTimeout,
+		SiliconFlowModel:          siliconFlowModel,
+		SiliconFlowModels:         siliconFlowModels,
+		SiliconFlowThinkingModels: siliconFlowThinkingModels,
+		AIRequestTimeout:          aiRequestTimeout,
 	}, nil
 }
 

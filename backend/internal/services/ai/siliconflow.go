@@ -49,17 +49,19 @@ func NewSiliconFlowProvider(
 }
 
 type siliconFlowRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Stream      bool      `json:"stream"`
-	Temperature float64   `json:"temperature"`
-	MaxTokens   int       `json:"max_tokens"`
+	Model          string    `json:"model"`
+	Messages       []Message `json:"messages"`
+	Stream         bool      `json:"stream"`
+	Temperature    float64   `json:"temperature"`
+	MaxTokens      int       `json:"max_tokens"`
+	EnableThinking bool      `json:"enable_thinking"`
 }
 
 type siliconFlowResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"message"`
 	} `json:"choices"`
 }
@@ -85,11 +87,12 @@ func (provider *SiliconFlowProvider) Generate(
 	}
 
 	requestBody := siliconFlowRequest{
-		Model:       model,
-		Messages:    request.Messages,
-		Stream:      false,
-		Temperature: 0.7,
-		MaxTokens:   1024,
+		Model:          model,
+		Messages:       request.Messages,
+		Stream:         false,
+		Temperature:    0.7,
+		MaxTokens:      1024,
+		EnableThinking: request.EnableThinking,
 	}
 
 	body, err := json.Marshal(requestBody)
@@ -158,11 +161,15 @@ func (provider *SiliconFlowProvider) Generate(
 	content := strings.TrimSpace(
 		responseBody.Choices[0].Message.Content,
 	)
+	thinking := strings.TrimSpace(
+		responseBody.Choices[0].Message.ReasoningContent,
+	)
 	if content == "" {
 		return GenerateResponse{}, ErrEmptyAIResponse
 	}
 
 	return GenerateResponse{
-		Content: content,
+		Content:  content,
+		Thinking: thinking,
 	}, nil
 }

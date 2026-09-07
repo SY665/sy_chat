@@ -24,6 +24,7 @@ var (
 	ErrStreamingNotSupported  = errors.New("AI provider does not support streaming")
 	ErrModelUnavailable       = errors.New("requested model is unavailable")
 	ErrMessageIDRequired      = errors.New("message ID is required")
+	ErrThinkingNotSupported   = errors.New("thinking mode is not supported by requested model")
 )
 
 // Repository 描述聊天业务需要的消息数据库操作。
@@ -56,6 +57,7 @@ type SendInput struct {
 	ConversationID string
 	Content        string
 	ModelID        string
+	EnableThinking bool
 }
 
 // TruncateInput 描述从某条用户消息开始截断对话所需的数据。
@@ -70,11 +72,20 @@ type Exchange struct {
 	AssistantMessage *models.Message
 }
 
+// StreamChunk 是 Chat Service 向 Handler 暴露的流式内容。
+type StreamChunk struct {
+	Content  string
+	Thinking string
+}
+
+type StreamHandler func(chunk StreamChunk) error
+
 type Service struct {
 	repository        Repository
 	provider          ai.Provider
 	defaultModelID    string
 	availableModelIDs map[string]struct{}
+	thinkingModelIDs  map[string]struct{}
 }
 
 func NewService(
@@ -82,6 +93,7 @@ func NewService(
 	provider ai.Provider,
 	defaultModelID string,
 	availableModelIDs []string,
+	thinkingModelIDs []string,
 ) *Service {
 	availableModels := make(map[string]struct{}, len(availableModelIDs)+1)
 	for _, modelID := range availableModelIDs {
@@ -91,11 +103,20 @@ func NewService(
 	// 即使配置列表有误，也保证后端默认模型可以使用。
 	availableModels[defaultModelID] = struct{}{}
 
+	thinkingModels := make(map[string]struct{}, len(thinkingModelIDs))
+	for _, modelID := range thinkingModelIDs {
+		// 只有同时存在于可用模型列表中的模型才能开启思考模式。
+		if _, exists := availableModels[modelID]; exists {
+			thinkingModels[modelID] = struct{}{}
+		}
+	}
+
 	return &Service{
 		repository:        repository,
 		provider:          provider,
 		defaultModelID:    defaultModelID,
 		availableModelIDs: availableModels,
+		thinkingModelIDs:  thinkingModels,
 	}
 }
 
@@ -129,6 +150,13 @@ func (service *Service) Send(
 		return nil, err
 	}
 
+	if err := service.validateThinkingMode(
+		modelID,
+		input.EnableThinking,
+	); err != nil {
+		return nil, err
+	}
+
 	history, err := service.repository.ListRecentByConversation(
 		ctx,
 		conversationID,
@@ -147,8 +175,9 @@ func (service *Service) Send(
 	aiResponse, err := service.provider.Generate(
 		ctx,
 		ai.GenerateRequest{
-			Model:    modelID,
-			Messages: contextMessages,
+			Model:          modelID,
+			Messages:       contextMessages,
+			EnableThinking: input.EnableThinking,
 		},
 	)
 	if err != nil {
@@ -159,6 +188,15 @@ func (service *Service) Send(
 	if reply == "" {
 		return nil, ai.ErrEmptyAIResponse
 	}
+	thinking := strings.TrimSpace(aiResponse.Thinking)
+
+	var storedThinking *string
+
+	// 数据库使用 nil 表示该消息没有独立思考内容。
+	if thinking != "" {
+		storedThinking = &thinking
+	}
+
 	now := time.Now()
 
 	userMessage := &models.Message{
@@ -172,6 +210,7 @@ func (service *Service) Send(
 		ConversationID: conversationID,
 		Role:           models.MessageRoleAssistant,
 		Content:        reply,
+		Thinking:       storedThinking,
 		CreatedAt:      now.Add(time.Millisecond),
 	}
 
@@ -197,7 +236,7 @@ func (service *Service) Send(
 func (service *Service) Stream(
 	ctx context.Context,
 	input SendInput,
-	onChunk ai.StreamHandler,
+	onChunk StreamHandler,
 ) (*Exchange, error) {
 	if onChunk == nil {
 		return nil, ai.ErrStreamHandlerRequired
@@ -228,6 +267,13 @@ func (service *Service) Stream(
 		return nil, err
 	}
 
+	if err := service.validateThinkingMode(
+		modelID,
+		input.EnableThinking,
+	); err != nil {
+		return nil, err
+	}
+
 	history, err := service.repository.ListRecentByConversation(
 		ctx,
 		conversationID,
@@ -248,22 +294,32 @@ func (service *Service) Stream(
 
 	contextMessages := buildContextMessages(history, content)
 	var replyBuilder strings.Builder
+	var thinkingBuilder strings.Builder
 
 	err = streamingProvider.Stream(
 		ctx,
 		ai.GenerateRequest{
-			Model:    modelID,
-			Messages: contextMessages,
+			Model:          modelID,
+			Messages:       contextMessages,
+			EnableThinking: input.EnableThinking,
 		},
-		func(chunk string) error {
-			if chunk == "" {
+		func(chunk ai.StreamChunk) error {
+			if chunk.Content == "" && chunk.Thinking == "" {
 				return nil
 			}
 
-			// 同时收集完整内容，用于流式结束后的数据库持久化。
-			replyBuilder.WriteString(chunk)
+			if chunk.Thinking != "" {
+				thinkingBuilder.WriteString(chunk.Thinking)
+			}
 
-			return onChunk(chunk)
+			if chunk.Content != "" {
+				replyBuilder.WriteString(chunk.Content)
+			}
+
+			return onChunk(StreamChunk{
+				Content:  chunk.Content,
+				Thinking: chunk.Thinking,
+			})
 		},
 	)
 	if err != nil {
@@ -273,12 +329,14 @@ func (service *Service) Stream(
 
 		if streamCanceled {
 			partialReply := strings.TrimSpace(replyBuilder.String())
+			partialThinking := strings.TrimSpace(thinkingBuilder.String())
 
 			if saveErr := service.saveInterruptedStream(
 				userID,
 				conversationID,
 				content,
 				partialReply,
+				partialThinking,
 			); saveErr != nil {
 				return nil, fmt.Errorf(
 					"save interrupted chat exchange: %w",
@@ -297,6 +355,13 @@ func (service *Service) Stream(
 		return nil, ai.ErrEmptyAIResponse
 	}
 
+	thinking := strings.TrimSpace(thinkingBuilder.String())
+	var storedThinking *string
+
+	if thinking != "" {
+		storedThinking = &thinking
+	}
+
 	now := time.Now()
 
 	userMessage := &models.Message{
@@ -311,6 +376,7 @@ func (service *Service) Stream(
 		Role:           models.MessageRoleAssistant,
 		Content:        reply,
 		CreatedAt:      now.Add(time.Millisecond),
+		Thinking:       storedThinking,
 	}
 
 	if err := service.repository.CreateExchange(
@@ -339,6 +405,7 @@ func (service *Service) saveInterruptedStream(
 	conversationID string,
 	content string,
 	partialReply string,
+	partialThinking string,
 ) error {
 	saveContext, cancel := context.WithTimeout(
 		context.Background(),
@@ -347,6 +414,12 @@ func (service *Service) saveInterruptedStream(
 	defer cancel()
 
 	now := time.Now()
+
+	var storedThinking *string
+
+	if partialThinking != "" {
+		storedThinking = &partialThinking
+	}
 
 	userMessage := &models.Message{
 		ConversationID: conversationID,
@@ -357,11 +430,13 @@ func (service *Service) saveInterruptedStream(
 
 	var assistantMessage *models.Message
 
-	if partialReply != "" {
+	// 即使正文尚未开始，只要已有思考内容，也需要保存 AI 消息。
+	if partialReply != "" || partialThinking != "" {
 		assistantMessage = &models.Message{
 			ConversationID: conversationID,
 			Role:           models.MessageRoleAssistant,
 			Content:        partialReply,
+			Thinking:       storedThinking,
 			CreatedAt:      now.Add(time.Millisecond),
 		}
 	}
@@ -423,6 +498,22 @@ func (service *Service) resolveModelID(requestedModelID string) (string, error) 
 	}
 
 	return modelID, nil
+}
+
+// validateThinkingMode 校验模型是否具有thinking能力
+func (service *Service) validateThinkingMode(
+	modelID string,
+	enableThinking bool,
+) error {
+	if !enableThinking {
+		return nil
+	}
+
+	if _, exists := service.thinkingModelIDs[modelID]; !exists {
+		return ErrThinkingNotSupported
+	}
+
+	return nil
 }
 
 // buildContextMessages 将数据库模型转换为 AI Provider 使用的消息格式。

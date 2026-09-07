@@ -4,6 +4,7 @@ import { listModels } from '@/lib/api/model'
 import { ApiRequestError } from '@/lib/api/client'
 
 const selectedModelStorageKey = 'sy-chat:selected-model'
+const thinkingEnabledStorageKey = 'sy-chat:thinking-enabled'
 
 function readStoredModelId(): string {
     try {
@@ -22,10 +23,30 @@ function writeStoredModelId(modelId: string) {
     }
 }
 
+function readStoredThinkingEnabled(): boolean {
+    try {
+        return window.localStorage.getItem(thinkingEnabledStorageKey) === 'true'
+    } catch {
+        return false
+    }
+}
+
+function writeStoredThinkingEnabled(enabled: boolean) {
+    try {
+        window.localStorage.setItem(
+            thinkingEnabledStorageKey,
+            String(enabled),
+        )
+    } catch {
+        // 存储失败时仅失去跨页面持久化，不影响当前聊天。
+    }
+}
+
 export const useModelStore = defineStore('model', {
     state: () => ({
         models: [] as AIModel[],
         selectedModelId: readStoredModelId(),
+        thinkingEnabled: readStoredThinkingEnabled(),
         isLoading: false,
         error: null as string | null
     }),
@@ -35,6 +56,19 @@ export const useModelStore = defineStore('model', {
             return state.models.find((model) => {
                 return model.id === state.selectedModelId
             })
+        },
+        selectedModelSupportsThinking: (state) => {
+            return state.models.find((model) => {
+                return model.id === state.selectedModelId
+            })?.supportsThinking ?? false
+        },
+        effectiveThinkingEnabled: (state) => {
+            const selectedModel = state.models.find((model) => {
+                return model.id === state.selectedModelId
+            })
+
+            return state.thinkingEnabled &&
+                (selectedModel?.supportsThinking ?? false)
         },
     },
 
@@ -81,6 +115,11 @@ export const useModelStore = defineStore('model', {
 
             this.selectedModelId = id
             writeStoredModelId(id)
+        },
+        setThinkingEnabled(enabled: boolean) {
+            // 保存用户偏好，实际请求还会通过模型能力进行限制。
+            this.thinkingEnabled = enabled
+            writeStoredThinkingEnabled(enabled)
         },
     }
 })

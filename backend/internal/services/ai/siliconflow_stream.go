@@ -14,7 +14,8 @@ import (
 type siliconFlowStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"delta"`
 	} `json:"choices"`
 }
@@ -46,11 +47,12 @@ func (provider *SiliconFlowProvider) Stream(
 	}
 
 	requestBody := siliconFlowRequest{
-		Model:       model,
-		Messages:    request.Messages,
-		Stream:      true,
-		Temperature: 0.7,
-		MaxTokens:   1024,
+		Model:          model,
+		Messages:       request.Messages,
+		Stream:         true,
+		Temperature:    0.7,
+		MaxTokens:      1024,
+		EnableThinking: request.EnableThinking,
 	}
 
 	body, err := json.Marshal(requestBody)
@@ -111,7 +113,7 @@ func (provider *SiliconFlowProvider) Stream(
 		1024*1024,
 	)
 
-	receivedContent := false
+	receivedOutput := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -129,7 +131,7 @@ func (provider *SiliconFlowProvider) Stream(
 		)
 
 		if data == "[DONE]" {
-			if !receivedContent {
+			if !receivedOutput {
 				return ErrEmptyAIResponse
 			}
 
@@ -148,14 +150,18 @@ func (provider *SiliconFlowProvider) Stream(
 			continue
 		}
 
-		content := chunk.Choices[0].Delta.Content
-		if content == "" {
+		streamChunk := StreamChunk{
+			Content:  chunk.Choices[0].Delta.Content,
+			Thinking: chunk.Choices[0].Delta.ReasoningContent,
+		}
+
+		if streamChunk.Content == "" && streamChunk.Thinking == "" {
 			continue
 		}
 
-		receivedContent = true
+		receivedOutput = true
 
-		if err := onChunk(content); err != nil {
+		if err := onChunk(streamChunk); err != nil {
 			return fmt.Errorf(
 				"handle SiliconFlow stream chunk: %w",
 				err,

@@ -24,7 +24,8 @@ export const useChatStore = defineStore('chat', {
         async sendMessage(
             conversationID: string,
             content: string,
-            modelId = ''
+            modelId = '',
+            enableThinking = false,
         ) {
             const value = content.trim()
 
@@ -52,35 +53,40 @@ export const useChatStore = defineStore('chat', {
             this.isGenerating = true
             this.messages.push(pendingMessage)
 
+            const getPendingAssistantMessage = (): ChatMessage | undefined => {
+                let assistantMessage = this.messages.find(
+                    (message) => message.id === pendingAssistantID,
+                )
+
+                if (assistantMessage) {
+                    return assistantMessage
+                }
+
+                const userMessageStillVisible = this.messages.some(
+                    (message) => message.id === pendingUserID,
+                )
+                if (!userMessageStillVisible) {
+                    return undefined
+                }
+
+                assistantMessage = {
+                    id: pendingAssistantID,
+                    role: 'assistant',
+                    content: '',
+                    createdAt: new Date().toISOString(),
+                }
+
+                this.messages.push(assistantMessage)
+                return assistantMessage
+            }
+
             try {
                 //调用后端
                 const response = await requestChatStream(
                     conversationID,
                     value,
                     (chunk) => {
-                        let assistantMessage = this.messages.find(
-                            (message) => message.id === pendingAssistantID,
-                        )
-
-                        if (!assistantMessage) {
-                            const userMessageStillVisible = this.messages.some(
-                                (message) => message.id === pendingUserID,
-                            )
-                            if (!userMessageStillVisible) {
-                                return
-                            }
-
-                            this.messages.push({
-                                id: pendingAssistantID,
-                                role: 'assistant',
-                                content: '',
-                                createdAt: new Date().toISOString(),
-                            })
-
-                            assistantMessage = this.messages.find(
-                                (message) => message.id === pendingAssistantID,
-                            )
-                        }
+                        const assistantMessage = getPendingAssistantMessage()
 
                         if (assistantMessage) {
                             assistantMessage.content += chunk
@@ -88,6 +94,15 @@ export const useChatStore = defineStore('chat', {
                     },
                     controller.signal,
                     modelId,
+                    (chunk) => {
+                        const assistantMessage = getPendingAssistantMessage()
+
+                        if (assistantMessage) {
+                            assistantMessage.thinking =
+                                (assistantMessage.thinking ?? '') + chunk
+                        }
+                    },
+                    enableThinking,
                 )
 
                 const userIndex = this.messages.findIndex(
@@ -167,6 +182,7 @@ export const useChatStore = defineStore('chat', {
             message: ChatMessage,
             replacementContent = message.content,
             modelId = '',
+            enableThinking = false,
         ) {
             const content = replacementContent.trim()
 
@@ -203,6 +219,7 @@ export const useChatStore = defineStore('chat', {
                     conversationID,
                     content,
                     modelId,
+                    enableThinking,
                 )
             } catch (error) {
                 this.errorMessage = getErrorMessage(error)
