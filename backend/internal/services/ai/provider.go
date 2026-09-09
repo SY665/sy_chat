@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	toolservice "sy_chat/internal/services/tools"
 )
 
 var (
@@ -14,19 +16,24 @@ var (
 )
 
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role             string             `json:"role"`
+	Content          string             `json:"content"`
+	ReasoningContent string             `json:"reasoning_content,omitempty"`
+	ToolCalls        []toolservice.Call `json:"tool_calls,omitempty"`
+	ToolCallID       string             `json:"tool_call_id,omitempty"`
 }
 
 type GenerateRequest struct {
 	Model          string
 	Messages       []Message
+	Tools          []toolservice.Definition
 	EnableThinking bool
 }
 
 type GenerateResponse struct {
-	Content  string
-	Thinking string
+	Content   string
+	Thinking  string
+	ToolCalls []toolservice.Call
 }
 
 type Provider interface {
@@ -38,8 +45,9 @@ type Provider interface {
 
 // StreamChunk 表示模型一次返回的增量内容。
 type StreamChunk struct {
-	Content  string
-	Thinking string
+	Content   string
+	Thinking  string
+	ToolCalls []toolservice.Call
 }
 
 // StreamHandler 接收模型每次生成的增量内容。

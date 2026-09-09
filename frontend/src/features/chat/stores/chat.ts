@@ -27,6 +27,7 @@ export const useChatStore = defineStore('chat', {
             modelId = '',
             enableThinking = false,
             attachments: FileAttachment[] = [],
+            enableWebSearch = false,
         ) {
             const value = content.trim()
 
@@ -106,6 +107,36 @@ export const useChatStore = defineStore('chat', {
                     },
                     enableThinking,
                     attachments,
+                    enableWebSearch,
+                    (toolEvent) => {
+                        const assistantMessage =
+                            getPendingAssistantMessage()
+
+                        if (!assistantMessage) {
+                            return
+                        }
+
+                        const toolEvents =
+                            assistantMessage.toolEvents ?? []
+
+                        const existingIndex = toolEvents.findIndex(
+                            (event) =>
+                                event.toolCallId ===
+                                toolEvent.toolCallId,
+                        )
+
+                        if (existingIndex === -1) {
+                            toolEvents.push(toolEvent)
+                        } else {
+                            toolEvents.splice(
+                                existingIndex,
+                                1,
+                                toolEvent,
+                            )
+                        }
+
+                        assistantMessage.toolEvents = toolEvents
+                    },
                 )
 
                 const userIndex = this.messages.findIndex(
@@ -123,10 +154,17 @@ export const useChatStore = defineStore('chat', {
                     (message) => message.id === pendingAssistantID,
                 )
                 if (assistantIndex !== -1) {
+                    const streamedToolEvents = this.messages[assistantIndex]?.toolEvents
+
                     this.messages.splice(
                         assistantIndex,
                         1,
-                        response.assistantMessage,
+                        {
+                            ...response.assistantMessage,
+                            toolEvents:
+                                response.assistantMessage.toolEvents ??
+                                streamedToolEvents,
+                        },
                     )
                 } else if (userIndex !== -1) {
                     this.messages.push(response.assistantMessage)
@@ -186,6 +224,7 @@ export const useChatStore = defineStore('chat', {
             replacementContent = message.content,
             modelId = '',
             enableThinking = false,
+            enableWebSearch = false,
         ) {
             const content = replacementContent.trim()
 
@@ -224,6 +263,7 @@ export const useChatStore = defineStore('chat', {
                     modelId,
                     enableThinking,
                     message.attachments ?? [],
+                    enableWebSearch,
                 )
             } catch (error) {
                 this.errorMessage = getErrorMessage(error)

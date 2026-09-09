@@ -11,6 +11,7 @@ import (
 	"sy_chat/internal/models"
 	"sy_chat/internal/response"
 	"sy_chat/internal/services/chat"
+	toolservice "sy_chat/internal/services/tools"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,9 +23,33 @@ type ChatRequest struct {
 	ConversationID string `json:"conversationId" binding:"required"`
 	Message        string `json:"message" binding:"required"`
 	// 允许旧版请求不传模型，由 Service 使用默认模型。
-	ModelID        string                  `json:"modelId"`
-	EnableThinking bool                    `json:"enableThinking"`
-	Attachments    []models.FileAttachment `json:"attachments"`
+	ModelID         string                  `json:"modelId"`
+	EnableThinking  bool                    `json:"enableThinking"`
+	EnableWebSearch bool                    `json:"enableWebSearch"`
+	Attachments     []models.FileAttachment `json:"attachments"`
+}
+
+// SearchSourceData 描述允许通过聊天接口返回的网页来源。
+type SearchSourceData struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	Snippet string `json:"snippet,omitempty"`
+}
+
+// GeneratedImageData 描述前端可以展示的生成图片。
+type GeneratedImageData struct {
+	URL    string `json:"url"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
+// ToolEventData 是允许返回给前端的工具执行结果。
+type ToolEventData struct {
+	ToolCallID string              `json:"toolCallId"`
+	Name       string              `json:"name"`
+	Status     string              `json:"status"`
+	Sources    []SearchSourceData  `json:"sources"`
+	Image      *GeneratedImageData `json:"image,omitempty"`
 }
 
 // ChatMessageData 描述聊天接口返回的一条已保存消息。
@@ -34,6 +59,7 @@ type ChatMessageData struct {
 	Content     string                  `json:"content"`
 	Thinking    *string                 `json:"thinking,omitempty"`
 	Attachments []models.FileAttachment `json:"attachments,omitempty"`
+	ToolEvents  []ToolEventData         `json:"toolEvents,omitempty"`
 	CreatedAt   string                  `json:"createdAt"`
 }
 
@@ -70,7 +96,7 @@ func NewChatHandler(chatService *chat.Service) *ChatHandler {
 // @Produce json
 // @Param request body ChatRequest true "聊天参数"
 // @Success 200 {object} response.Envelope{data=ChatData}
-// @Failure 400,401,404,413,500,501 {object} response.Envelope
+// @Failure 400,401,404,413,500,501,502,503 {object} response.Envelope
 // @Router /chat [post]
 func (handler *ChatHandler) Send(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
@@ -94,12 +120,13 @@ func (handler *ChatHandler) Send(c *gin.Context) {
 	exchange, err := handler.chatService.Send(
 		c.Request.Context(),
 		chat.SendInput{
-			UserID:         userID,
-			ConversationID: request.ConversationID,
-			Content:        request.Message,
-			ModelID:        request.ModelID,
-			EnableThinking: request.EnableThinking,
-			Attachments:    request.Attachments,
+			UserID:          userID,
+			ConversationID:  request.ConversationID,
+			Content:         request.Message,
+			ModelID:         request.ModelID,
+			EnableThinking:  request.EnableThinking,
+			EnableWebSearch: request.EnableWebSearch,
+			Attachments:     request.Attachments,
 		},
 	)
 	if err != nil {
@@ -115,13 +142,13 @@ func (handler *ChatHandler) Send(c *gin.Context) {
 
 // Stream godoc
 // @Summary 流式发送聊天消息
-// @Description 使用 SSE 持续返回 AI 回复。chunk 事件包含增量文本，done 事件包含最终消息，error 事件表示流内错误。
+// @Description 使用 SSE 返回思考内容、工具状态、增量正文和最终消息。事件包括 thinking、tool、chunk、done 和 error。
 // @Tags Chat
 // @Accept json
 // @Produce text/event-stream
 // @Param request body ChatRequest true "聊天参数"
-// @Success 200 {string} string "SSE 事件流：chunk、done、error"
-// @Failure 400,401,404,500,501 {object} response.Envelope
+// @Success 200 {string} string "SSE 事件流：thinking、tool、chunk、done、error"
+// @Failure 400,401,404,500,501,502,503 {object} response.Envelope
 // @Router /chat/stream [post]
 func (handler *ChatHandler) Stream(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
@@ -146,17 +173,30 @@ func (handler *ChatHandler) Stream(c *gin.Context) {
 	exchange, err := handler.chatService.Stream(
 		c.Request.Context(),
 		chat.SendInput{
-			UserID:         userID,
-			ConversationID: request.ConversationID,
-			Content:        request.Message,
-			ModelID:        request.ModelID,
-			EnableThinking: request.EnableThinking,
-			Attachments:    request.Attachments,
+			UserID:          userID,
+			ConversationID:  request.ConversationID,
+			Content:         request.Message,
+			ModelID:         request.ModelID,
+			EnableThinking:  request.EnableThinking,
+			EnableWebSearch: request.EnableWebSearch,
+			Attachments:     request.Attachments,
 		},
 		func(chunk chat.StreamChunk) error {
 			if !streamStarted {
 				prepareSSEHeaders(c)
 				streamStarted = true
+			}
+
+			if chunk.ToolStatus != "" {
+				if err := writeSSEEvent(c, "tool", ToolEventData{
+					ToolCallID: chunk.ToolCallID,
+					Name:       chunk.ToolName,
+					Status:     chunk.ToolStatus,
+					Sources:    newSearchSourceData(chunk.Sources),
+					Image:      newGeneratedImageData(chunk.Image),
+				}); err != nil {
+					return err
+				}
 			}
 
 			if chunk.Thinking != "" {
@@ -351,6 +391,22 @@ func (handler *ChatHandler) handleError(c *gin.Context, err error) {
 			"单个附件不能超过 1 MB",
 		)
 
+	case errors.Is(err, chat.ErrWebSearchUnavailable):
+		response.Error(
+			c,
+			http.StatusServiceUnavailable,
+			"WEB_SEARCH_UNAVAILABLE",
+			"联网搜索尚未配置，请关闭联网搜索后重试",
+		)
+
+	case errors.Is(err, chat.ErrToolRoundLimit):
+		response.Error(
+			c,
+			http.StatusBadGateway,
+			"TOOL_ROUND_LIMIT",
+			"联网搜索执行次数过多，请稍后重试",
+		)
+
 	case errors.Is(err, chat.ErrStreamingNotSupported):
 		response.Error(
 			c,
@@ -378,6 +434,7 @@ func newChatMessageData(message *models.Message) ChatMessageData {
 		Thinking:    message.Thinking,
 		Attachments: decodeMessageAttachments(message),
 		CreatedAt:   message.CreatedAt.Format(time.RFC3339Nano),
+		ToolEvents:  decodeMessageToolEvents(message),
 	}
 }
 
@@ -398,6 +455,59 @@ func decodeMessageAttachments(
 	}
 
 	return attachments
+}
+
+// decodeMessageToolEvents 只提取适合展示的结构化工具信息。
+func decodeMessageToolEvents(
+	message *models.Message,
+) []ToolEventData {
+	if len(message.ToolResults) == 0 {
+		return nil
+	}
+
+	var results []toolservice.Result
+	if err := json.Unmarshal(message.ToolResults, &results); err != nil {
+		slog.Warn(
+			"decode message tool results",
+			"message_id",
+			message.ID,
+			"error",
+			err,
+		)
+		return nil
+	}
+
+	events := make([]ToolEventData, 0, len(results))
+	for _, result := range results {
+		events = append(events, ToolEventData{
+			ToolCallID: result.ToolCallID,
+			Name:       result.Name,
+			Status:     "complete",
+			Sources:    newSearchSourceData(result.Sources),
+			Image:      newGeneratedImageData(result.Image),
+		})
+	}
+
+	return events
+}
+
+func newSearchSourceData(
+	sources []toolservice.SearchSource,
+) []SearchSourceData {
+	if len(sources) == 0 {
+		return nil
+	}
+
+	data := make([]SearchSourceData, 0, len(sources))
+	for _, source := range sources {
+		data = append(data, SearchSourceData{
+			Title:   source.Title,
+			URL:     source.URL,
+			Snippet: source.Snippet,
+		})
+	}
+
+	return data
 }
 
 func prepareSSEHeaders(c *gin.Context) {
@@ -432,4 +542,18 @@ func writeSSEEvent(
 	c.Writer.Flush()
 
 	return nil
+}
+
+func newGeneratedImageData(
+	image *toolservice.GeneratedImage,
+) *GeneratedImageData {
+	if image == nil {
+		return nil
+	}
+
+	return &GeneratedImageData{
+		URL:    image.URL,
+		Width:  image.Width,
+		Height: image.Height,
+	}
 }

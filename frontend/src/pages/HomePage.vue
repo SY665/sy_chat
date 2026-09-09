@@ -8,6 +8,7 @@ import AppHeader from '@/components/layout/AppHeader.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import MainLayout from '@/components/layout/MainLayout.vue'
 import ChatInput from '@/features/chat/components/ChatInput.vue'
+import WebSearchToggle from '@/features/chat/components/WebSearchToggle.vue'
 import ModelSelect from '@/features/model/components/ModelSelect.vue'
 import { useModelStore } from '@/features/model/stores/model'
 import ThinkingToggle from '@/features/model/components/ThinkingToggle.vue'
@@ -17,10 +18,12 @@ import { useConversationStore } from '@/features/conversation/stores/conversatio
 import { ApiRequestError, isAbortError } from '@/lib/api/client'
 import type { ChatMessage, FileAttachment, } from '@/features/chat/types'
 import { useAppStore } from '@/stores/app'
+import { useToastStore } from '@/stores/toast'
 import { exportConversationAsMarkdown } from '@/features/conversation/utils/exportConversation'
 import ShareDialog from '@/features/share/components/ShareDialog.vue'
 
 const appStore = useAppStore()
+const toastStore = useToastStore()
 const modelStore = useModelStore()
 const route = useRoute()
 const router = useRouter()
@@ -74,6 +77,7 @@ async function loadSelectedConversation(id: string) {
         content: message.content,
         thinking: message.thinking,
         attachments: message.attachments,
+        toolEvents: message.toolEvents,
         createdAt: message.createdAt,
       }))
 
@@ -123,8 +127,11 @@ async function handleRenameConversation(
 ) {
   try {
     await conversationStore.rename(id, title)
+    toastStore.success('会话标题已更新')
   } catch {
-    // Store 已保存错误信息。
+    toastStore.error(
+      conversationError.value ?? '修改会话标题失败',
+    )
   }
 }
 
@@ -134,8 +141,11 @@ async function handlePinConversation(
 ) {
   try {
     await conversationStore.setPinned(id, isPinned)
+    toastStore.success(isPinned ? '会话已置顶' : '已取消置顶')
   } catch {
-    // Store 已保存错误信息。
+    toastStore.error(
+      conversationError.value ?? '更新会话置顶状态失败',
+    )
   }
 }
 
@@ -149,8 +159,52 @@ async function handleRemoveConversation(id: string) {
       chatStore.clearMessages()
       await router.replace('/chat')
     }
+
+    toastStore.success('会话已删除')
   } catch {
-    // Store 已保存错误信息。
+    toastStore.error(
+      conversationError.value ?? '删除会话失败',
+    )
+  }
+}
+
+async function handleRemoveConversations(ids: string[]) {
+  if (ids.length === 0 || isGenerating.value) {
+    return
+  }
+
+  const removingCurrentConversation =
+    !!conversationId.value &&
+    ids.includes(conversationId.value)
+
+  try {
+    const result = await conversationStore.removeMany(ids)
+
+    toastStore.success(`已删除 ${result.deletedCount} 个会话`)
+
+    if (!removingCurrentConversation) {
+      return
+    }
+
+    chatStore.clearMessages()
+
+    // 当前会话被删除后，优先打开剩余列表中的第一条会话。
+    const nextConversation = conversationStore.conversations[0]
+
+    if (nextConversation) {
+      await router.replace({
+        name: 'home',
+        params: {
+          conversationId: nextConversation.id,
+        },
+      })
+    } else {
+      await router.replace({ name: 'home' })
+    }
+  } catch {
+    toastStore.error(
+      conversationError.value ?? '批量删除会话失败',
+    )
   }
 }
 
@@ -192,6 +246,7 @@ async function handleSend(content: string, attachments: FileAttachment[] = [],) 
   // 在异步创建会话之前记录模型，整个请求使用同一个选择。
   const modelId = modelStore.selectedModelId
   const enableThinking = modelStore.effectiveThinkingEnabled
+  const enableWebSearch = modelStore.effectiveWebSearchEnabled
   let targetConversationID = conversationId.value
   let createdConversationForSend = false
 
@@ -211,7 +266,14 @@ async function handleSend(content: string, attachments: FileAttachment[] = [],) 
         },
       })
     }
-    await chatStore.sendMessage(targetConversationID, content, modelId, enableThinking,attachments,)
+    await chatStore.sendMessage(
+      targetConversationID,
+      content,
+      modelId,
+      enableThinking,
+      attachments,
+      enableWebSearch,
+    )
 
     if (conversationId.value !== targetConversationID) {
       return
@@ -268,6 +330,7 @@ async function regenerateFromUserMessage(
 
   const modelId = modelStore.selectedModelId
   const enableThinking = modelStore.effectiveThinkingEnabled
+  const enableWebSearch = modelStore.effectiveWebSearchEnabled
   try {
     // 编辑和重新生成共用同一套“截断旧分支并重新发送”流程。
     await chatStore.truncateAndResend(
@@ -276,6 +339,7 @@ async function regenerateFromUserMessage(
       content,
       modelId,
       enableThinking,
+      enableWebSearch,
     )
 
     if (conversationId.value !== targetConversationID) {
@@ -321,6 +385,18 @@ onMounted(async () => {
 
     if (conversationId.value) {
       await loadSelectedConversation(conversationId.value)
+      return
+    }
+
+    const pendingMessage =
+      typeof route.query.message === 'string'
+        ? route.query.message.trim()
+        : ''
+
+    if (pendingMessage) {
+      // 先移除查询参数，避免刷新页面后重复发送同一条消息。
+      await router.replace({ name: 'home' })
+      await handleSend(pendingMessage)
     }
   } catch {
     // Store 已保存错误信息。
@@ -359,7 +435,7 @@ watch(conversationId, async (id, previousID) => {
         :is-loading="isLoading" :is-creating="isCreating" :is-mutating="isMutating" :error="conversationError"
         @toggle="appStore.toggleSidebar" @create="handleCreateConversation" @search="conversationStore.setSearchQuery"
         @select="handleSelectConversation" @rename="handleRenameConversation" @pin="handlePinConversation"
-        @remove="handleRemoveConversation" />
+        @remove="handleRemoveConversation" @remove-many="handleRemoveConversations" />
     </template>
 
     <template #header>
@@ -390,6 +466,8 @@ watch(conversationId, async (id, previousID) => {
         <div class="mx-auto w-full max-w-3xl">
           <div class="mb-2 flex min-w-0 items-center justify-between gap-2">
             <ModelSelect full-width class="min-w-0 flex-1" :disabled="isGenerating || isCreating" />
+
+            <WebSearchToggle class="shrink-0" :disabled="isGenerating || isCreating" />
 
             <ThinkingToggle class="shrink-0" :disabled="isGenerating || isCreating" />
           </div>

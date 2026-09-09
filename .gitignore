@@ -24,3 +24,6 @@ pnpm-debug.log*
 Thumbs.db
 
 PROJECT_PLAN.md
+
+# Generated resources
+backend/storage/

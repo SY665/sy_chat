@@ -9,13 +9,25 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	toolservice "sy_chat/internal/services/tools"
 )
+
+// siliconFlowStreamToolCall 是一次工具调用的增量数据。
+// Arguments 可能分散在多个 SSE 数据块中，需要按 Index 合并。
+type siliconFlowStreamToolCall struct {
+	Index    int                      `json:"index"`
+	ID       string                   `json:"id"`
+	Type     string                   `json:"type"`
+	Function toolservice.FunctionCall `json:"function"`
+}
 
 type siliconFlowStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
+			Content          string                      `json:"content"`
+			ReasoningContent string                      `json:"reasoning_content"`
+			ToolCalls        []siliconFlowStreamToolCall `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
 }
@@ -53,6 +65,11 @@ func (provider *SiliconFlowProvider) Stream(
 		Temperature:    0.7,
 		MaxTokens:      1024,
 		EnableThinking: request.EnableThinking,
+	}
+
+	if len(request.Tools) > 0 {
+		requestBody.Tools = request.Tools
+		requestBody.ToolChoice = "auto"
 	}
 
 	body, err := json.Marshal(requestBody)
@@ -114,6 +131,7 @@ func (provider *SiliconFlowProvider) Stream(
 	)
 
 	receivedOutput := false
+	toolCalls := make([]toolservice.Call, 0)
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -135,6 +153,18 @@ func (provider *SiliconFlowProvider) Stream(
 				return ErrEmptyAIResponse
 			}
 
+			// 工具参数全部拼接完成后，只向上层发送一次完整调用。
+			if len(toolCalls) > 0 {
+				if err := onChunk(StreamChunk{
+					ToolCalls: toolCalls,
+				}); err != nil {
+					return fmt.Errorf(
+						"handle SiliconFlow tool calls: %w",
+						err,
+					)
+				}
+			}
+
 			return nil
 		}
 
@@ -150,9 +180,43 @@ func (provider *SiliconFlowProvider) Stream(
 			continue
 		}
 
+		delta := chunk.Choices[0].Delta
+
+		for _, toolCallDelta := range delta.ToolCalls {
+			if toolCallDelta.Index < 0 {
+				return fmt.Errorf(
+					"invalid SiliconFlow tool call index: %d",
+					toolCallDelta.Index,
+				)
+			}
+
+			for len(toolCalls) <= toolCallDelta.Index {
+				toolCalls = append(toolCalls, toolservice.Call{})
+			}
+
+			call := &toolCalls[toolCallDelta.Index]
+
+			if toolCallDelta.ID != "" {
+				call.ID = toolCallDelta.ID
+			}
+			if toolCallDelta.Type != "" {
+				call.Type = toolCallDelta.Type
+			}
+			if toolCallDelta.Function.Name != "" {
+				call.Function.Name = toolCallDelta.Function.Name
+			}
+
+			// arguments 是 JSON 字符串增量，必须追加而不是覆盖。
+			call.Function.Arguments += toolCallDelta.Function.Arguments
+		}
+
+		if len(delta.ToolCalls) > 0 {
+			receivedOutput = true
+		}
+
 		streamChunk := StreamChunk{
-			Content:  chunk.Choices[0].Delta.Content,
-			Thinking: chunk.Choices[0].Delta.ReasoningContent,
+			Content:  delta.Content,
+			Thinking: delta.ReasoningContent,
 		}
 
 		if streamChunk.Content == "" && streamChunk.Thinking == "" {

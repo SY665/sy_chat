@@ -17,18 +17,20 @@ type ModelData struct {
 	SupportsThinking bool   `json:"supportsThinking"`
 }
 
-// ModelListData 包含可用模型以及服务端默认模型。
+// ModelListData 包含可用模型、默认模型和服务端能力。
 type ModelListData struct {
-	Models         []ModelData `json:"models"`
-	DefaultModelID string      `json:"defaultModelId"`
+	Models             []ModelData `json:"models"`
+	DefaultModelID     string      `json:"defaultModelId"`
+	WebSearchAvailable bool        `json:"webSearchAvailable"`
 }
 
 type ModelHandler struct {
-	models         []ModelData
-	defaultModelID string
+	models             []ModelData
+	defaultModelID     string
+	webSearchAvailable bool
 }
 
-func NewModelHandler(provider string, modelIDs []string, defaultModelID string, thinkingModelIDs []string) *ModelHandler {
+func NewModelHandler(provider string, modelIDs []string, defaultModelID string, thinkingModelIDs []string, webSearchAvailable bool) *ModelHandler {
 	thinkingModels := make(
 		map[string]struct{},
 		len(thinkingModelIDs),
@@ -47,7 +49,8 @@ func NewModelHandler(provider string, modelIDs []string, defaultModelID string, 
 					SupportsThinking: false,
 				},
 			},
-			defaultModelID: "local",
+			defaultModelID:     "local",
+			webSearchAvailable: false,
 		}
 	}
 
@@ -63,8 +66,9 @@ func NewModelHandler(provider string, modelIDs []string, defaultModelID string, 
 		})
 	}
 	return &ModelHandler{
-		models:         models,
-		defaultModelID: defaultModelID,
+		models:             models,
+		defaultModelID:     defaultModelID,
+		webSearchAvailable: webSearchAvailable,
 	}
 }
 
@@ -87,7 +91,8 @@ func modelDisplayName(modelID string) string {
 // @Router /models [get]
 func (handler *ModelHandler) List(c *gin.Context) {
 	response.JSON(c, http.StatusOK, ModelListData{
-		Models:         handler.models,
-		DefaultModelID: handler.defaultModelID,
+		Models:             handler.models,
+		DefaultModelID:     handler.defaultModelID,
+		WebSearchAvailable: handler.webSearchAvailable,
 	})
 }

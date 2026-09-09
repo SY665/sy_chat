@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path"
 	"strings"
 	"sy_chat/internal/models"
 	"sy_chat/internal/services/ai"
+	toolservice "sy_chat/internal/services/tools"
 	"time"
 	"unicode/utf8"
 
@@ -58,16 +60,17 @@ type Repository interface {
 		conversationID string,
 		userID string,
 		messageID string,
-	) (int64, error)
+	) (int64, []models.Message, error)
 }
 
 type SendInput struct {
-	UserID         string
-	ConversationID string
-	Content        string
-	ModelID        string
-	EnableThinking bool
-	Attachments    []models.FileAttachment
+	UserID          string
+	ConversationID  string
+	Content         string
+	ModelID         string
+	EnableThinking  bool
+	EnableWebSearch bool
+	Attachments     []models.FileAttachment
 }
 
 // TruncateInput 描述从某条用户消息开始截断对话所需的数据。
@@ -82,10 +85,15 @@ type Exchange struct {
 	AssistantMessage *models.Message
 }
 
-// StreamChunk 是 Chat Service 向 Handler 暴露的流式内容。
+// StreamChunk 是 Chat Service 向 Handler 暴露的流式事件。
 type StreamChunk struct {
-	Content  string
-	Thinking string
+	Content    string
+	Thinking   string
+	ToolCallID string
+	ToolName   string
+	ToolStatus string
+	Sources    []toolservice.SearchSource
+	Image      *toolservice.GeneratedImage
 }
 
 type StreamHandler func(chunk StreamChunk) error
@@ -93,6 +101,8 @@ type StreamHandler func(chunk StreamChunk) error
 type Service struct {
 	repository        Repository
 	provider          ai.Provider
+	toolRegistry      *toolservice.Registry
+	imageCleaner      toolservice.GeneratedImageCleaner
 	defaultModelID    string
 	availableModelIDs map[string]struct{}
 	thinkingModelIDs  map[string]struct{}
@@ -101,10 +111,16 @@ type Service struct {
 func NewService(
 	repository Repository,
 	provider ai.Provider,
+	toolRegistry *toolservice.Registry,
+	imageCleaner toolservice.GeneratedImageCleaner,
 	defaultModelID string,
 	availableModelIDs []string,
 	thinkingModelIDs []string,
 ) *Service {
+	if toolRegistry == nil {
+		toolRegistry = toolservice.NewRegistry()
+	}
+
 	availableModels := make(map[string]struct{}, len(availableModelIDs)+1)
 	for _, modelID := range availableModelIDs {
 		availableModels[modelID] = struct{}{}
@@ -124,6 +140,8 @@ func NewService(
 	return &Service{
 		repository:        repository,
 		provider:          provider,
+		toolRegistry:      toolRegistry,
+		imageCleaner:      imageCleaner,
 		defaultModelID:    defaultModelID,
 		availableModelIDs: availableModels,
 		thinkingModelIDs:  thinkingModels,
@@ -196,17 +214,35 @@ func (service *Service) Send(
 		attachments,
 	)
 
-	aiResponse, err := service.provider.Generate(
+	generation, err := service.generateWithTools(
 		ctx,
 		ai.GenerateRequest{
 			Model:          modelID,
 			Messages:       contextMessages,
 			EnableThinking: input.EnableThinking,
 		},
+		input.EnableWebSearch,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("generate AI reply: %w", err)
 	}
+
+	aiResponse := generation.response
+
+	toolCallsJSON, toolResultsJSON, err := generation.encodeToolTrace()
+	if err != nil {
+		return nil, err
+	}
+
+	imagesPersisted := false
+	defer func() {
+		if !imagesPersisted {
+			service.cleanupUnpersistedGeneratedImages(
+				toolResultsJSON,
+				"send",
+			)
+		}
+	}()
 
 	reply := strings.TrimSpace(aiResponse.Content)
 	if reply == "" {
@@ -236,6 +272,8 @@ func (service *Service) Send(
 		Role:           models.MessageRoleAssistant,
 		Content:        reply,
 		Thinking:       storedThinking,
+		ToolCalls:      toolCallsJSON,
+		ToolResults:    toolResultsJSON,
 		CreatedAt:      now.Add(time.Millisecond),
 	}
 
@@ -250,6 +288,8 @@ func (service *Service) Send(
 	); err != nil {
 		return nil, fmt.Errorf("save chat exchange: %w", err)
 	}
+
+	imagesPersisted = true
 
 	return &Exchange{
 		UserMessage:      userMessage,
@@ -335,18 +375,16 @@ func (service *Service) Stream(
 	var replyBuilder strings.Builder
 	var thinkingBuilder strings.Builder
 
-	err = streamingProvider.Stream(
+	generation, err := service.streamWithTools(
 		ctx,
+		streamingProvider,
 		ai.GenerateRequest{
 			Model:          modelID,
 			Messages:       contextMessages,
 			EnableThinking: input.EnableThinking,
 		},
-		func(chunk ai.StreamChunk) error {
-			if chunk.Content == "" && chunk.Thinking == "" {
-				return nil
-			}
-
+		input.EnableWebSearch,
+		func(chunk StreamChunk) error {
 			if chunk.Thinking != "" {
 				thinkingBuilder.WriteString(chunk.Thinking)
 			}
@@ -355,10 +393,7 @@ func (service *Service) Stream(
 				replyBuilder.WriteString(chunk.Content)
 			}
 
-			return onChunk(StreamChunk{
-				Content:  chunk.Content,
-				Thinking: chunk.Thinking,
-			})
+			return onChunk(chunk)
 		},
 	)
 	if err != nil {
@@ -390,6 +425,21 @@ func (service *Service) Stream(
 		return nil, fmt.Errorf("stream AI reply: %w", err)
 	}
 
+	toolCallsJSON, toolResultsJSON, err := generation.encodeToolTrace()
+	if err != nil {
+		return nil, err
+	}
+
+	imagesPersisted := false
+	defer func() {
+		if !imagesPersisted {
+			service.cleanupUnpersistedGeneratedImages(
+				toolResultsJSON,
+				"stream",
+			)
+		}
+	}()
+
 	reply := strings.TrimSpace(replyBuilder.String())
 	if reply == "" {
 		return nil, ai.ErrEmptyAIResponse
@@ -418,6 +468,8 @@ func (service *Service) Stream(
 		Content:        reply,
 		CreatedAt:      now.Add(time.Millisecond),
 		Thinking:       storedThinking,
+		ToolCalls:      toolCallsJSON,
+		ToolResults:    toolResultsJSON,
 	}
 
 	if err := service.repository.CreateExchange(
@@ -432,6 +484,8 @@ func (service *Service) Stream(
 			err,
 		)
 	}
+
+	imagesPersisted = true
 
 	return &Exchange{
 		UserMessage:      userMessage,
@@ -493,6 +547,25 @@ func (service *Service) saveInterruptedStream(
 	)
 }
 
+// cleanupUnpersistedGeneratedImages 清理未能写入消息记录的图片。
+func (service *Service) cleanupUnpersistedGeneratedImages(
+	toolResults datatypes.JSON,
+	operation string,
+) {
+	if err := toolservice.DeleteGeneratedImages(
+		service.imageCleaner,
+		toolResults,
+	); err != nil {
+		slog.Warn(
+			"clean unpersisted generated images",
+			"operation",
+			operation,
+			"error",
+			err,
+		)
+	}
+}
+
 // TruncateFromUserMessage 删除指定用户消息以及它之后的对话分支。
 func (service *Service) TruncateFromUserMessage(
 	ctx context.Context,
@@ -513,7 +586,7 @@ func (service *Service) TruncateFromUserMessage(
 		return 0, ErrMessageIDRequired
 	}
 
-	deletedCount, err := service.repository.DeleteFromUserMessage(
+	deletedCount, deletedMessages, err := service.repository.DeleteFromUserMessage(
 		ctx,
 		conversationID,
 		userID,
@@ -524,6 +597,22 @@ func (service *Service) TruncateFromUserMessage(
 			"truncate conversation from user message: %w",
 			err,
 		)
+	}
+
+	// 数据库事务已经提交，文件清理失败只记录日志，不能回滚删除结果。
+	for _, message := range deletedMessages {
+		if err := toolservice.DeleteGeneratedImages(
+			service.imageCleaner,
+			message.ToolResults,
+		); err != nil {
+			slog.Warn(
+				"clean generated images after message truncation",
+				"conversation_id",
+				conversationID,
+				"error",
+				err,
+			)
+		}
 	}
 
 	return deletedCount, nil

@@ -8,8 +8,10 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: {
-        name: 'home',
+      name: 'landing',
+      component: () => import('@/pages/LandingPage.vue'),
+      meta: {
+        guestOnly: true,
       },
     },
     {

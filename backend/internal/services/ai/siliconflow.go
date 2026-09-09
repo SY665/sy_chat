@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	toolservice "sy_chat/internal/services/tools"
 )
 
 const defaultRequestTimeout = 60 * time.Second
@@ -49,19 +51,22 @@ func NewSiliconFlowProvider(
 }
 
 type siliconFlowRequest struct {
-	Model          string    `json:"model"`
-	Messages       []Message `json:"messages"`
-	Stream         bool      `json:"stream"`
-	Temperature    float64   `json:"temperature"`
-	MaxTokens      int       `json:"max_tokens"`
-	EnableThinking bool      `json:"enable_thinking"`
+	Model          string                   `json:"model"`
+	Messages       []Message                `json:"messages"`
+	Tools          []toolservice.Definition `json:"tools,omitempty"`
+	ToolChoice     string                   `json:"tool_choice,omitempty"`
+	Stream         bool                     `json:"stream"`
+	Temperature    float64                  `json:"temperature"`
+	MaxTokens      int                      `json:"max_tokens"`
+	EnableThinking bool                     `json:"enable_thinking"`
 }
 
 type siliconFlowResponse struct {
 	Choices []struct {
 		Message struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
+			Content          string             `json:"content"`
+			ReasoningContent string             `json:"reasoning_content"`
+			ToolCalls        []toolservice.Call `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
 }
@@ -93,6 +98,11 @@ func (provider *SiliconFlowProvider) Generate(
 		Temperature:    0.7,
 		MaxTokens:      1024,
 		EnableThinking: request.EnableThinking,
+	}
+
+	if len(request.Tools) > 0 {
+		requestBody.Tools = request.Tools
+		requestBody.ToolChoice = "auto"
 	}
 
 	body, err := json.Marshal(requestBody)
@@ -158,18 +168,18 @@ func (provider *SiliconFlowProvider) Generate(
 		return GenerateResponse{}, ErrEmptyAIResponse
 	}
 
-	content := strings.TrimSpace(
-		responseBody.Choices[0].Message.Content,
-	)
-	thinking := strings.TrimSpace(
-		responseBody.Choices[0].Message.ReasoningContent,
-	)
-	if content == "" {
+	message := responseBody.Choices[0].Message
+	content := strings.TrimSpace(message.Content)
+	thinking := strings.TrimSpace(message.ReasoningContent)
+
+	// 模型可能先返回工具调用，此时没有最终正文也是合法响应。
+	if content == "" && len(message.ToolCalls) == 0 {
 		return GenerateResponse{}, ErrEmptyAIResponse
 	}
 
 	return GenerateResponse{
-		Content:  content,
-		Thinking: thinking,
+		Content:   content,
+		Thinking:  thinking,
+		ToolCalls: message.ToolCalls,
 	}, nil
 }

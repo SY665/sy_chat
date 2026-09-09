@@ -2,6 +2,8 @@
 import { RouterView } from 'vue-router'
 import { onMounted } from 'vue';
 
+import AppErrorBoundary from '@/components/ui/AppErrorBoundary.vue'
+import ToastViewport from '@/components/ui/ToastViewport.vue'
 import { useAppStore } from './stores/app';
 
 const appStore = useAppStore()
@@ -15,5 +17,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <RouterView />
+  <AppErrorBoundary>
+    <RouterView />
+  </AppErrorBoundary>
+
+  <ToastViewport />
 </template>

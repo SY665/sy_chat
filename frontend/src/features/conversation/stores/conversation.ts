@@ -7,6 +7,7 @@ import type {
 import {
     createConversation,
     deleteConversation,
+    deleteConversationsBatch,
     getConversation,
     listConversations,
     updateConversationPinned,
@@ -273,6 +274,46 @@ export const useConversationStore = defineStore('conversation', {
                 throw error
             } finally {
                 this.mutatingConversationId = null
+                this.isMutating = false
+            }
+        },
+
+        async removeMany(ids: string[]) {
+            // 在请求前去除空值和重复值，使前端状态与后端删除集合一致。
+            const normalizedIDs = [
+                ...new Set(ids.map((id) => id.trim()).filter(Boolean)),
+            ]
+
+            if (normalizedIDs.length === 0) {
+                return {
+                    deletedCount: 0,
+                }
+            }
+
+            this.isMutating = true
+            this.mutatingConversationId = null
+            this.error = null
+
+            try {
+                const result = await deleteConversationsBatch(normalizedIDs)
+                const deletedIDs = new Set(normalizedIDs)
+
+                this.conversations = this.conversations.filter(
+                    (conversation) => !deletedIDs.has(conversation.id),
+                )
+
+                if (
+                    this.currentConversation &&
+                    deletedIDs.has(this.currentConversation.id)
+                ) {
+                    this.currentConversation = null
+                }
+
+                return result
+            } catch (error) {
+                this.error = getErrorMessage(error)
+                throw error
+            } finally {
                 this.isMutating = false
             }
         },

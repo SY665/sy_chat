@@ -6,23 +6,28 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sy_chat/internal/models"
+	toolservice "sy_chat/internal/services/tools"
 	"time"
 	"unicode/utf8"
 )
 
 const (
-	DefaultTitle   = models.DefaultConversationTitle
-	MaxTitleLength = 255
+	DefaultTitle        = models.DefaultConversationTitle
+	MaxTitleLength      = 255
+	MaxBatchDeleteCount = 100
 )
 
 var (
-	ErrUserIDRequired         = errors.New("user ID is required")
-	ErrConversationIDRequired = errors.New("conversation ID is required")
-	ErrTitleRequired          = errors.New("conversation title is required")
-	ErrTitleTooLong           = errors.New("conversation title is too long")
-	ErrShareTokenRequired     = errors.New("share token is required")
+	ErrUserIDRequired          = errors.New("user ID is required")
+	ErrConversationIDRequired  = errors.New("conversation ID is required")
+	ErrConversationIDsRequired = errors.New("conversation IDs are required")
+	ErrTooManyConversationIDs  = errors.New("too many conversation IDs")
+	ErrTitleRequired           = errors.New("conversation title is required")
+	ErrTitleTooLong            = errors.New("conversation title is too long")
+	ErrShareTokenRequired      = errors.New("share token is required")
 )
 
 // Repository 描述 Service 所需要的数据库操作。
@@ -76,7 +81,13 @@ type Repository interface {
 		ctx context.Context,
 		id string,
 		userID string,
-	) error
+	) ([]models.Message, error)
+
+	DeleteMany(
+		ctx context.Context,
+		ids []string,
+		userID string,
+	) (int64, []models.Message, error)
 }
 
 type ShareResult struct {
@@ -85,12 +96,17 @@ type ShareResult struct {
 }
 
 type Service struct {
-	repository Repository
+	repository   Repository
+	imageCleaner toolservice.GeneratedImageCleaner
 }
 
-func NewService(repository Repository) *Service {
+func NewService(
+	repository Repository,
+	imageCleaner toolservice.GeneratedImageCleaner,
+) *Service {
 	return &Service{
-		repository: repository,
+		repository:   repository,
+		imageCleaner: imageCleaner,
 	}
 }
 
@@ -339,11 +355,94 @@ func (service *Service) Delete(
 		return ErrUserIDRequired
 	}
 
-	if err := service.repository.Delete(ctx, id, userID); err != nil {
+	deletedMessages, err := service.repository.Delete(ctx, id, userID)
+	if err != nil {
 		return fmt.Errorf("delete conversation: %w", err)
 	}
 
+	// 数据库删除已经提交，图片清理失败只记录日志。
+	for _, message := range deletedMessages {
+		if err := toolservice.DeleteGeneratedImages(
+			service.imageCleaner,
+			message.ToolResults,
+		); err != nil {
+			slog.Warn(
+				"clean generated images after conversation delete",
+				"conversation_id",
+				id,
+				"error",
+				err,
+			)
+		}
+	}
+
 	return nil
+}
+
+// DeleteMany 校验并删除当前用户选择的多条对话。
+func (service *Service) DeleteMany(
+	ctx context.Context,
+	ids []string,
+	userID string,
+) (int64, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return 0, ErrUserIDRequired
+	}
+
+	if len(ids) == 0 {
+		return 0, ErrConversationIDsRequired
+	}
+	if len(ids) > MaxBatchDeleteCount {
+		return 0, ErrTooManyConversationIDs
+	}
+
+	normalizedIDs := make([]string, 0, len(ids))
+	seenIDs := make(map[string]struct{}, len(ids))
+
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return 0, ErrConversationIDsRequired
+		}
+
+		if _, exists := seenIDs[id]; exists {
+			continue
+		}
+
+		seenIDs[id] = struct{}{}
+		normalizedIDs = append(normalizedIDs, id)
+	}
+
+	deletedCount, deletedMessages, err := service.repository.DeleteMany(
+		ctx,
+		normalizedIDs,
+		userID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"batch delete conversations: %w",
+			err,
+		)
+	}
+
+	// 批量删除事务已经提交，逐条清理消息关联的生成图片。
+	for _, message := range deletedMessages {
+		if err := toolservice.DeleteGeneratedImages(
+			service.imageCleaner,
+			message.ToolResults,
+		); err != nil {
+			slog.Warn(
+				"clean generated images after batch conversation delete",
+				"deleted_conversation_count",
+				deletedCount,
+				"error",
+				err,
+			)
+		}
+	}
+
+	return deletedCount, nil
 }
 
 func newShareToken() (string, error) {

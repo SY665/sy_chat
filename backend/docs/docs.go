@@ -353,13 +353,25 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/response.Envelope"
                         }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
                     }
                 }
             }
         },
         "/chat/stream": {
             "post": {
-                "description": "使用 SSE 持续返回 AI 回复。chunk 事件包含增量文本，done 事件包含最终消息，error 事件表示流内错误。",
+                "description": "使用 SSE 返回思考内容、工具状态、增量正文和最终消息。事件包括 thinking、tool、chunk、done 和 error。",
                 "consumes": [
                     "application/json"
                 ],
@@ -383,7 +395,7 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "SSE 事件流：chunk、done、error",
+                        "description": "SSE 事件流：thinking、tool、chunk、done、error",
                         "schema": {
                             "type": "string"
                         }
@@ -414,6 +426,18 @@ const docTemplate = `{
                     },
                     "501": {
                         "description": "Not Implemented",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "$ref": "#/definitions/response.Envelope"
                         }
@@ -514,6 +538,76 @@ const docTemplate = `{
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/conversations/batch": {
+            "delete": {
+                "description": "删除当前用户选择的多条对话及其全部消息。",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Conversations"
+                ],
+                "summary": "批量删除对话",
+                "parameters": [
+                    {
+                        "description": "会话 ID 列表",
+                        "name": "input",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.BatchDeleteConversationsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/response.Envelope"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/handlers.BatchDeleteConversationsData"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/response.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/response.Envelope"
                         }
@@ -1166,6 +1260,28 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.BatchDeleteConversationsData": {
+            "type": "object",
+            "properties": {
+                "deletedCount": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handlers.BatchDeleteConversationsRequest": {
+            "type": "object",
+            "required": [
+                "ids"
+            ],
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "handlers.ChatData": {
             "type": "object",
             "properties": {
@@ -1200,6 +1316,12 @@ const docTemplate = `{
                 },
                 "thinking": {
                     "type": "string"
+                },
+                "toolEvents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.ToolEventData"
+                    }
                 }
             }
         },
@@ -1220,6 +1342,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "enableThinking": {
+                    "type": "boolean"
+                },
+                "enableWebSearch": {
                     "type": "boolean"
                 },
                 "message": {
@@ -1311,6 +1436,12 @@ const docTemplate = `{
                 },
                 "thinking": {
                     "type": "string"
+                },
+                "toolEvents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.ToolEventData"
+                    }
                 }
             }
         },
@@ -1386,6 +1517,20 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.GeneratedImageData": {
+            "type": "object",
+            "properties": {
+                "height": {
+                    "type": "integer"
+                },
+                "url": {
+                    "type": "string"
+                },
+                "width": {
+                    "type": "integer"
+                }
+            }
+        },
         "handlers.HealthResponse": {
             "type": "object",
             "properties": {
@@ -1440,6 +1585,9 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/handlers.ModelData"
                     }
+                },
+                "webSearchAvailable": {
+                    "type": "boolean"
                 }
             }
         },
@@ -1480,6 +1628,15 @@ const docTemplate = `{
                 },
                 "role": {
                     "type": "string"
+                },
+                "thinking": {
+                    "type": "string"
+                },
+                "toolEvents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.ToolEventData"
+                    }
                 }
             }
         },
@@ -1503,6 +1660,43 @@ const docTemplate = `{
                     "type": "string",
                     "maxLength": 30,
                     "minLength": 3
+                }
+            }
+        },
+        "handlers.SearchSourceData": {
+            "type": "object",
+            "properties": {
+                "snippet": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.ToolEventData": {
+            "type": "object",
+            "properties": {
+                "image": {
+                    "$ref": "#/definitions/handlers.GeneratedImageData"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "sources": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.SearchSourceData"
+                    }
+                },
+                "status": {
+                    "type": "string"
+                },
+                "toolCallId": {
+                    "type": "string"
                 }
             }
         },

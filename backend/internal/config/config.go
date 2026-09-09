@@ -12,15 +12,21 @@ import (
 )
 
 const (
-	defaultAppEnv             = "development"
-	defaultServerPort         = "8080"
-	defaultFrontendOrigin     = "http://localhost:5173"
-	defaultJWTExpiresIn       = "168h"
-	defaultCookieSecure       = "false"
-	defaultAIProvider         = "local"
-	defaultSiliconFlowBaseURL = "https://api.siliconflow.cn/v1"
-	defaultSiliconFlowModel   = "Pro/zai-org/GLM-5.1"
-	defaultAIRequestTimeout   = "60s"
+	defaultAppEnv                  = "development"
+	defaultServerPort              = "8080"
+	defaultFrontendOrigin          = "http://localhost:5173"
+	defaultJWTExpiresIn            = "168h"
+	defaultCookieSecure            = "false"
+	defaultAIProvider              = "local"
+	defaultSiliconFlowBaseURL      = "https://api.siliconflow.cn/v1"
+	defaultSiliconFlowModel        = "Pro/zai-org/GLM-5.1"
+	defaultSiliconFlowImageModel   = "Kwai-Kolors/Kolors"
+	defaultAIRequestTimeout        = "60s"
+	defaultImageRequestTimeout     = "120s"
+	defaultTavilySearchURL         = "https://api.tavily.com/search"
+	defaultWebSearchTimeout        = "10s"
+	defaultGeneratedImageDir       = "storage/generated"
+	defaultGeneratedImageURLPrefix = "/generated"
 )
 
 type Config struct {
@@ -38,6 +44,13 @@ type Config struct {
 	SiliconFlowModels         []string
 	SiliconFlowThinkingModels []string
 	AIRequestTimeout          time.Duration
+	SiliconFlowImageModel     string
+	ImageRequestTimeout       time.Duration
+	GeneratedImageDir         string
+	GeneratedImageURLPrefix   string
+	TavilyAPIKey              string
+	TavilySearchURL           string
+	WebSearchTimeout          time.Duration
 }
 
 func Load() (Config, error) {
@@ -104,6 +117,38 @@ func Load() (Config, error) {
 		)
 	}
 
+	webSearchTimeout, err := time.ParseDuration(
+		getEnv("WEB_SEARCH_TIMEOUT", defaultWebSearchTimeout),
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf(
+			"parse WEB_SEARCH_TIMEOUT: %w",
+			err,
+		)
+	}
+
+	if webSearchTimeout <= 0 {
+		return Config{}, errors.New(
+			"WEB_SEARCH_TIMEOUT must be greater than zero",
+		)
+	}
+
+	imageRequestTimeout, err := time.ParseDuration(
+		getEnv("IMAGE_REQUEST_TIMEOUT", defaultImageRequestTimeout),
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf(
+			"parse IMAGE_REQUEST_TIMEOUT: %w",
+			err,
+		)
+	}
+
+	if imageRequestTimeout <= 0 {
+		return Config{}, errors.New(
+			"IMAGE_REQUEST_TIMEOUT must be greater than zero",
+		)
+	}
+
 	siliconFlowAPIKey := strings.TrimSpace(
 		os.Getenv("SILICONFLOW_API_KEY"),
 	)
@@ -152,6 +197,27 @@ func Load() (Config, error) {
 		SiliconFlowModels:         siliconFlowModels,
 		SiliconFlowThinkingModels: siliconFlowThinkingModels,
 		AIRequestTimeout:          aiRequestTimeout,
+		SiliconFlowImageModel: getEnv(
+			"SILICONFLOW_IMAGE_MODEL",
+			defaultSiliconFlowImageModel,
+		),
+		ImageRequestTimeout: imageRequestTimeout,
+		GeneratedImageDir: getEnv(
+			"GENERATED_IMAGE_DIR",
+			defaultGeneratedImageDir,
+		),
+		GeneratedImageURLPrefix: getEnv(
+			"GENERATED_IMAGE_URL_PREFIX",
+			defaultGeneratedImageURLPrefix,
+		),
+		TavilyAPIKey: strings.TrimSpace(
+			os.Getenv("TAVILY_API_KEY"),
+		),
+		TavilySearchURL: getEnv(
+			"TAVILY_SEARCH_URL",
+			defaultTavilySearchURL,
+		),
+		WebSearchTimeout: webSearchTimeout,
 	}, nil
 }
 

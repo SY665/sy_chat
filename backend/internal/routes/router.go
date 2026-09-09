@@ -2,6 +2,7 @@
 package routes
 
 import (
+	"log/slog"
 	"time"
 
 	_ "sy_chat/docs"
@@ -13,6 +14,8 @@ import (
 	"sy_chat/internal/services/auth"
 	"sy_chat/internal/services/chat"
 	conversationservice "sy_chat/internal/services/conversation"
+	"sy_chat/internal/services/imagegen"
+	toolservice "sy_chat/internal/services/tools"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -74,6 +77,73 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 	messageRepository := repositories.NewMessageRepository(db)
 	aiProvider := newAIProvider(cfg)
 
+	toolRegistry := toolservice.NewRegistry()
+
+	// 图片存储与当前 AI Provider 无关，保证历史图片始终可以访问和清理。
+	imageStorage, imageStorageErr := imagegen.NewStorage(
+		cfg.GeneratedImageDir,
+		cfg.GeneratedImageURLPrefix,
+		cfg.ImageRequestTimeout,
+	)
+
+	var imageCleaner toolservice.GeneratedImageCleaner
+
+	if imageStorageErr != nil {
+		slog.Error(
+			"initialize generated image storage",
+			"error",
+			imageStorageErr,
+		)
+	} else {
+		imageCleaner = imageStorage
+
+		// 禁止目录列表，但允许通过 UUID 文件名访问单张图片。
+		router.StaticFS(
+			imageStorage.URLPrefix(),
+			gin.Dir(imageStorage.Directory(), false),
+		)
+		slog.Info("Generated image storage enabled")
+	}
+
+	// 图片生成仅在 SiliconFlow Provider 下启用。
+	if cfg.AIProvider == "siliconflow" && imageStorage != nil {
+		imageClient := imagegen.NewSiliconFlowClient(
+			cfg.SiliconFlowAPIKey,
+			cfg.SiliconFlowBaseURL,
+			cfg.SiliconFlowImageModel,
+			cfg.ImageRequestTimeout,
+		)
+		imageTool := toolservice.NewGenerateImageTool(
+			imageClient,
+			imageStorage,
+		)
+
+		if err := toolRegistry.Register(imageTool); err != nil {
+			slog.Error(
+				"register image generation tool",
+				"error",
+				err,
+			)
+		} else {
+			slog.Info("Image generation tool enabled")
+		}
+	}
+
+	// 未配置 Tavily Key 时不注册搜索工具，普通聊天仍可正常使用。
+	if cfg.TavilyAPIKey != "" {
+		webSearchTool := toolservice.NewWebSearchTool(
+			cfg.TavilyAPIKey,
+			cfg.TavilySearchURL,
+			cfg.WebSearchTimeout,
+		)
+
+		if err := toolRegistry.Register(webSearchTool); err != nil {
+			slog.Error("register web search tool", "error", err)
+		} else {
+			slog.Info("Web search tool enabled")
+		}
+	}
+
 	defaultModelID := cfg.SiliconFlowModel
 	availableModelIDs := cfg.SiliconFlowModels
 	thinkingModelIDs := cfg.SiliconFlowThinkingModels
@@ -87,17 +157,22 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 	chatService := chat.NewService(
 		messageRepository,
 		aiProvider,
+		toolRegistry,
+		imageCleaner,
 		defaultModelID,
 		availableModelIDs,
 		thinkingModelIDs,
 	)
 	chatHandler := handlers.NewChatHandler(chatService)
 
+	webSearchAvailable := cfg.AIProvider == "siliconflow" && toolRegistry.Has(toolservice.WebSearchName)
+
 	modelHandler := handlers.NewModelHandler(
 		cfg.AIProvider,
 		availableModelIDs,
 		defaultModelID,
 		thinkingModelIDs,
+		webSearchAvailable,
 	)
 
 	userRepository := repositories.NewUserRepository(db)
@@ -116,6 +191,7 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 	conversationRepository := repositories.NewConversationRepository(db)
 	conversationService := conversationservice.NewService(
 		conversationRepository,
+		imageCleaner,
 	)
 	conversationHandler := handlers.NewConversationHandler(
 		conversationService,
@@ -170,6 +246,7 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 		{
 			conversationRoutes.POST("", conversationHandler.Create)
 			conversationRoutes.GET("", conversationHandler.List)
+			conversationRoutes.DELETE("/batch", conversationHandler.DeleteMany)
 			conversationRoutes.GET("/:id", conversationHandler.Get)
 			conversationRoutes.DELETE("/:id/messages/:messageId/tail", chatHandler.TruncateFromMessage)
 			conversationRoutes.PATCH("/:id", conversationHandler.UpdateTitle)

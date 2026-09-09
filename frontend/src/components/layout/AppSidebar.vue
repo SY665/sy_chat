@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
     Check,
+    ListChecks,
     LoaderCircle,
     MessageSquare,
     PanelLeftClose,
@@ -16,6 +17,7 @@ import {
 } from '@lucide/vue'
 
 import type { ConversationSummary } from '@/features/conversation/types'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import SettingsDialog from '@/features/settings/components/SettingsDialog.vue'
 const props = defineProps<{
     collapsed: boolean
@@ -37,9 +39,124 @@ const emit = defineEmits<{
     pin: [id: string, isPinned: boolean]
     search: [query: string]
     remove: [id: string]
+    removeMany: [ids: string[]]
 }>()
 
 const settingsOpen = ref(false)
+
+const selectionMode = ref(false)
+const selectedIDs = ref<string[]>([])
+const maxSelectionCount = 100
+
+type PendingRemoval =
+    | {
+        kind: 'single'
+        conversation: ConversationSummary
+    }
+    | {
+        kind: 'many'
+        ids: string[]
+    }
+
+const pendingRemoval = ref<PendingRemoval | null>(null)
+
+const removalDialogTitle = computed(() =>
+    pendingRemoval.value?.kind === 'many'
+        ? '删除多个对话'
+        : '删除对话',
+)
+
+const removalDialogDescription = computed(() => {
+    const removal = pendingRemoval.value
+
+    if (!removal) {
+        return ''
+    }
+
+    if (removal.kind === 'many') {
+        return `将永久删除选中的 ${removal.ids.length} 个对话，此操作无法撤销。`
+    }
+
+    return `将永久删除对话“${removal.conversation.title}”，此操作无法撤销。`
+})
+
+const selectedCount = computed(() => selectedIDs.value.length)
+
+const selectableIDs = computed(() =>
+    props.conversations
+        .slice(0, maxSelectionCount)
+        .map((conversation) => conversation.id),
+)
+
+const allVisibleSelected = computed(
+    () =>
+        selectableIDs.value.length > 0 &&
+        selectableIDs.value.every((id) => selectedIDs.value.includes(id)),
+)
+
+function startSelection() {
+    cancelRename()
+    selectionMode.value = true
+    selectedIDs.value = []
+}
+
+function cancelSelection() {
+    selectionMode.value = false
+    selectedIDs.value = []
+}
+
+function isSelected(id: string) {
+    return selectedIDs.value.includes(id)
+}
+
+function toggleSelected(id: string) {
+    if (isSelected(id)) {
+        selectedIDs.value = selectedIDs.value.filter(
+            (selectedID) => selectedID !== id,
+        )
+        return
+    }
+
+    if (selectedIDs.value.length >= maxSelectionCount) {
+        return
+    }
+
+    selectedIDs.value = [...selectedIDs.value, id]
+}
+
+function toggleSelectAll() {
+    selectedIDs.value = allVisibleSelected.value
+        ? []
+        : [...selectableIDs.value]
+}
+
+function requestRemoveMany() {
+    if (selectedIDs.value.length === 0 || props.isMutating) {
+        return
+    }
+
+    pendingRemoval.value = {
+        kind: 'many',
+        ids: [...selectedIDs.value]
+    }
+}
+
+// 搜索或会话数据变化后，移除当前列表中已经不存在的选中项。
+watch(
+    () => props.conversations.map((conversation) => conversation.id),
+    (conversationIDs) => {
+        const availableIDs = new Set(conversationIDs)
+
+        selectedIDs.value = selectedIDs.value.filter((id) =>
+            availableIDs.has(id),
+        )
+
+        if (conversationIDs.length === 0) {
+            cancelSelection()
+        }
+    },
+)
+
 
 const conversationSections = computed(() => [
     {
@@ -87,13 +204,37 @@ function handleSearchInput(event: Event) {
 }
 
 function requestRemove(conversation: ConversationSummary) {
-    const confirmed = window.confirm(
-        `确定删除对话“${conversation.title}”吗？`,
-    )
-
-    if (confirmed) {
-        emit('remove', conversation.id)
+    if (props.isMutating) {
+        return
     }
+
+    pendingRemoval.value = {
+        kind: 'single',
+        conversation,
+    }
+}
+
+function closeRemovalDialog() {
+    pendingRemoval.value = null
+}
+
+function confirmRemoval() {
+    const removal = pendingRemoval.value
+
+    if (!removal || props.isMutating) {
+        return
+    }
+
+    // 先关闭弹窗，具体请求状态继续由父组件和 Store 管理。
+    pendingRemoval.value = null
+
+    if (removal.kind === 'single') {
+        emit('remove', removal.conversation.id)
+        return
+    }
+
+    emit('removeMany', removal.ids)
+    cancelSelection()
 }
 </script>
 
@@ -140,6 +281,34 @@ function requestRemove(conversation: ConversationSummary) {
         </div>
 
         <div v-if="!collapsed" class="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+            <div class="mb-2 flex h-8 items-center justify-between px-1">
+                <span class="text-xs font-medium text-neutral-500 dark:text-neutral-400">
+                    历史会话
+                </span>
+
+                <button v-if="!selectionMode" type="button"
+                    class="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-neutral-600 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                    :disabled="props.isMutating || props.conversations.length === 0" title="批量选择"
+                    @click="startSelection">
+                    <ListChecks :size="14" />
+                    <span>选择</span>
+                </button>
+
+                <div v-else class="flex items-center gap-1">
+                    <button type="button"
+                        class="h-8 rounded-md px-2 text-xs text-neutral-600 transition hover:bg-neutral-200 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                        @click="toggleSelectAll">
+                        {{ allVisibleSelected ? '取消全选' : '全选' }}
+                    </button>
+
+                    <button type="button"
+                        class="flex h-8 w-8 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                        title="退出选择" @click="cancelSelection">
+                        <X :size="15" />
+                    </button>
+                </div>
+            </div>
+
             <div class="relative mb-2">
                 <Search class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-500"
                     :size="15" />
@@ -158,6 +327,21 @@ function requestRemove(conversation: ConversationSummary) {
             <p v-if="searchQuery" class="px-3 pb-2 text-xs font-medium text-neutral-500">
                 找到 {{ conversations.length }} 个对话
             </p>
+
+            <div v-if="selectionMode"
+                class="mb-2 flex h-9 items-center justify-between border-y border-neutral-200 px-1 dark:border-neutral-800">
+                <span class="text-xs text-neutral-500 dark:text-neutral-400">
+                    已选择 {{ selectedCount }} 项
+                </span>
+
+                <button type="button"
+                    class="flex h-7 items-center gap-1 rounded-md px-2 text-xs text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-red-950/30"
+                    :disabled="selectedCount === 0 || props.isMutating" @click="requestRemoveMany">
+                    <LoaderCircle v-if="props.isMutating" :size="14" class="animate-spin" />
+                    <Trash2 v-else :size="14" />
+                    <span>删除</span>
+                </button>
+            </div>
 
             <div v-if="isLoading" class="flex h-16 items-center justify-center text-neutral-500">
                 <LoaderCircle class="h-4 w-4 animate-spin" />
@@ -178,9 +362,11 @@ function requestRemove(conversation: ConversationSummary) {
                     </p>
 
                     <div v-for="conversation in section.conversations" :key="conversation.id"
-                        class="group mb-0.5 flex min-h-9 items-center rounded-md" :class="conversation.id === activeConversationId
-                            ? 'bg-neutral-200 dark:bg-neutral-800'
-                            : 'hover:bg-neutral-200 dark:hover:bg-neutral-800'
+                        class="group mb-0.5 flex min-h-9 items-center rounded-md" :class="selectionMode && isSelected(conversation.id)
+                            ? 'bg-emerald-50 dark:bg-emerald-950/30'
+                            : conversation.id === activeConversationId
+                                ? 'bg-neutral-200 dark:bg-neutral-800'
+                                : 'hover:bg-neutral-100 dark:hover:bg-neutral-800/70'
                             ">
                         <form v-if="editingID === conversation.id" class="flex min-w-0 flex-1 items-center gap-1 px-1"
                             @submit.prevent="submitRename">
@@ -202,16 +388,31 @@ function requestRemove(conversation: ConversationSummary) {
                         </form>
 
                         <template v-else>
+
+                            <label v-if="selectionMode" class="ml-2 flex h-8 w-5 shrink-0 items-center justify-center">
+                                <input type="checkbox" class="h-4 w-4 accent-emerald-600"
+                                    :checked="isSelected(conversation.id)" :disabled="!isSelected(conversation.id) &&
+                                        selectedCount >= maxSelectionCount
+                                        " :aria-label="`选择对话 ${conversation.title}`"
+                                    @change="toggleSelected(conversation.id)" />
+                            </label>
+
                             <button type="button" class="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm" :class="{
                                 'font-medium': conversation.id === activeConversationId,
-                            }" :title="conversation.title" @click="emit('select', conversation.id)">
+                            }" :title="conversation.title" @click="
+                                selectionMode
+                                    ? toggleSelected(conversation.id)
+                                    : emit('select', conversation.id)
+                                ">
                                 {{ conversation.title }}
                             </button>
 
-                            <LoaderCircle v-if="props.mutatingConversationId === conversation.id"
-                                class="mr-2 h-4 w-4 shrink-0 animate-spin text-neutral-500" />
+                            <LoaderCircle v-if="
+                                !selectionMode &&
+                                props.mutatingConversationId === conversation.id
+                            " class="mr-2 h-4 w-4 shrink-0 animate-spin text-neutral-500" />
 
-                            <button v-else type="button"
+                            <button v-else-if="!selectionMode" type="button"
                                 class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-neutral-300 hover:text-neutral-950 disabled:opacity-50 dark:hover:bg-neutral-700 dark:hover:text-white"
                                 :class="conversation.isPinned
                                     ? 'text-emerald-700 dark:text-emerald-400'
@@ -223,7 +424,10 @@ function requestRemove(conversation: ConversationSummary) {
                                 <Pin :size="14" :fill="conversation.isPinned ? 'currentColor' : 'none'" />
                             </button>
 
-                            <div v-if="props.mutatingConversationId !== conversation.id"
+                            <div v-if="
+                                !selectionMode &&
+                                props.mutatingConversationId !== conversation.id
+                            "
                                 class="flex shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                                 <button type="button"
                                     class="flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-300 hover:text-neutral-950 disabled:opacity-50 dark:hover:bg-neutral-700 dark:hover:text-white"
@@ -257,5 +461,9 @@ function requestRemove(conversation: ConversationSummary) {
         </div>
 
         <SettingsDialog :open="settingsOpen" @close="settingsOpen = false" />
+
+        <ConfirmDialog :open="pendingRemoval !== null" :title="removalDialogTitle"
+            :description="removalDialogDescription" confirm-text="删除" danger @cancel="closeRemovalDialog"
+            @confirm="confirmRemoval" />
     </aside>
 </template>

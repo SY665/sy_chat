@@ -15,6 +15,9 @@ import {
 import type { ChatMessage } from '../types'
 import ThinkingPanel from './ThinkingPanel.vue'
 import MessageEditor from './MessageEditor.vue'
+import SearchSources from './SearchSources.vue'
+import ImageGenerationStatus from './ImageGenerationStatus.vue'
+import GeneratedImageResult from './GeneratedImageResult.vue'
 import MarkdownContent from './MarkdownContent.vue'
 
 const props = withDefaults(
@@ -39,6 +42,12 @@ const hasFailed = computed(
 const hasStopped = computed(
     () => props.message.status === 'stopped',
 )
+
+const generatedImages = computed(() => {
+    return props.message.toolEvents?.flatMap((event) => {
+        return event.image ? [event.image] : []
+    }) ?? []
+})
 
 const canRetryPersistedAssistant = computed(
     () =>
@@ -97,8 +106,8 @@ function copyMessage() {
             <div v-if="isUser && message.attachments?.length" class="flex max-w-full flex-wrap justify-end gap-2">
                 <div v-for="(file, index) in message.attachments" :key="`${file.name}-${index}`"
                     class="flex min-w-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs" :class="file.type === 'md'
-                            ? 'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-800 dark:bg-orange-950 dark:text-orange-300'
-                            : 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300'
+                        ? 'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-800 dark:bg-orange-950 dark:text-orange-300'
+                        : 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300'
                         " :title="file.name">
                     <FileText :size="14" class="shrink-0" aria-hidden="true" />
 
@@ -123,6 +132,13 @@ function copyMessage() {
 
             <div v-else class="w-full min-w-0">
                 <ThinkingPanel v-if="message.thinking" :content="message.thinking" :default-open="retryDisabled" />
+
+                <SearchSources v-if="message.toolEvents?.length" :events="message.toolEvents" />
+
+                <ImageGenerationStatus v-if="message.toolEvents?.length" :events="message.toolEvents" />
+
+                <GeneratedImageResult v-for="image in generatedImages" :key="`${message.id}-${image.url}`"
+                    :image="image" />
 
                 <MarkdownContent v-if="message.content" :content="message.content"
                     class="w-full min-w-0 py-3 text-sm" />

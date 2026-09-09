@@ -27,6 +27,7 @@ type ConversationMessageData struct {
 	Content     string                  `json:"content"`
 	Thinking    *string                 `json:"thinking,omitempty"`
 	Attachments []models.FileAttachment `json:"attachments,omitempty"`
+	ToolEvents  []ToolEventData         `json:"toolEvents,omitempty"`
 	CreatedAt   time.Time               `json:"createdAt"`
 }
 
@@ -86,6 +87,16 @@ type ConversationDeleteData struct {
 	Message string `json:"message"`
 }
 
+// BatchDeleteConversationsRequest 描述批量删除的会话 ID。
+type BatchDeleteConversationsRequest struct {
+	IDs []string `json:"ids" binding:"required"`
+}
+
+// BatchDeleteConversationsData 描述批量删除结果。
+type BatchDeleteConversationsData struct {
+	DeletedCount int64 `json:"deletedCount"`
+}
+
 // ConversationShareData 包含公开分享令牌和创建时间。
 type ConversationShareData struct {
 	ShareToken string    `json:"shareToken"`
@@ -94,10 +105,12 @@ type ConversationShareData struct {
 
 // PublicShareMessageData 描述公开页面允许展示的消息。
 type PublicShareMessageData struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID         string          `json:"id"`
+	Role       string          `json:"role"`
+	Content    string          `json:"content"`
+	Thinking   *string         `json:"thinking,omitempty"`
+	ToolEvents []ToolEventData `json:"toolEvents,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt"`
 }
 
 // PublicShareData 描述无需登录即可读取的分享内容。
@@ -251,6 +264,7 @@ func (handler *ConversationHandler) Get(c *gin.Context) {
 			Content:     message.Content,
 			Thinking:    message.Thinking,
 			Attachments: decodeMessageAttachments(message),
+			ToolEvents:  decodeMessageToolEvents(message),
 			CreatedAt:   message.CreatedAt,
 		})
 	}
@@ -417,10 +431,12 @@ func (handler *ConversationHandler) GetShared(c *gin.Context) {
 		}
 
 		messages = append(messages, PublicShareMessageData{
-			ID:        message.ID,
-			Role:      message.Role,
-			Content:   message.Content,
-			CreatedAt: message.CreatedAt,
+			ID:         message.ID,
+			Role:       message.Role,
+			Content:    message.Content,
+			Thinking:   message.Thinking,
+			ToolEvents: decodeMessageToolEvents(message),
+			CreatedAt:  message.CreatedAt,
 		})
 	}
 
@@ -497,6 +513,49 @@ func (handler *ConversationHandler) Unshare(c *gin.Context) {
 	})
 }
 
+// DeleteMany godoc
+// @Summary 批量删除对话
+// @Description 删除当前用户选择的多条对话及其全部消息。
+// @Tags Conversations
+// @Accept json
+// @Produce json
+// @Param input body BatchDeleteConversationsRequest true "会话 ID 列表"
+// @Success 200 {object} response.Envelope{data=BatchDeleteConversationsData}
+// @Failure 400,401,404,500 {object} response.Envelope
+// @Router /conversations/batch [delete]
+func (handler *ConversationHandler) DeleteMany(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录")
+		return
+	}
+
+	var request BatchDeleteConversationsRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		response.Error(
+			c,
+			http.StatusBadRequest,
+			"INVALID_BATCH_DELETE_INPUT",
+			"请提供需要删除的会话 ID",
+		)
+		return
+	}
+
+	deletedCount, err := handler.conversationService.DeleteMany(
+		c.Request.Context(),
+		request.IDs,
+		userID,
+	)
+	if err != nil {
+		handler.handleError(c, err)
+		return
+	}
+
+	response.JSON(c, http.StatusOK, BatchDeleteConversationsData{
+		DeletedCount: deletedCount,
+	})
+}
+
 // Delete godoc
 // @Summary 删除对话
 // @Tags Conversations
@@ -566,6 +625,22 @@ func (handler *ConversationHandler) handleError(
 
 	case errors.Is(err, conversationservice.ErrUserIDRequired):
 		response.Error(c, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录")
+
+	case errors.Is(err, conversationservice.ErrConversationIDsRequired):
+		response.Error(
+			c,
+			http.StatusBadRequest,
+			"CONVERSATION_IDS_REQUIRED",
+			"请至少选择一个需要删除的对话",
+		)
+
+	case errors.Is(err, conversationservice.ErrTooManyConversationIDs):
+		response.Error(
+			c,
+			http.StatusBadRequest,
+			"TOO_MANY_CONVERSATION_IDS",
+			"单次最多删除 100 个对话",
+		)
 
 	default:
 		slog.Error("handle conversation request", "error", err)

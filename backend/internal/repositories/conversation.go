@@ -216,11 +216,14 @@ func (repository *ConversationRepository) UpdateSharing(
 }
 
 // Delete 在事务中删除属于指定用户的对话及其全部消息。
+// 返回消息快照，供事务提交后清理关联的本地资源。
 func (repository *ConversationRepository) Delete(
 	ctx context.Context,
 	id string,
 	userID string,
-) error {
+) ([]models.Message, error) {
+	var deletedMessages []models.Message
+
 	err := repository.db.WithContext(ctx).Transaction(
 		func(transaction *gorm.DB) error {
 			var conversation models.Conversation
@@ -233,6 +236,18 @@ func (repository *ConversationRepository) Delete(
 				Error; err != nil {
 				return fmt.Errorf(
 					"find conversation before delete: %w",
+					err,
+				)
+			}
+
+			// 数据库提交后才能删除图片，因此先保存工具结果快照。
+			if err := transaction.
+				Select("tool_results").
+				Where("conversation_id = ?", conversation.ID).
+				Find(&deletedMessages).
+				Error; err != nil {
+				return fmt.Errorf(
+					"list conversation messages before delete: %w",
 					err,
 				)
 			}
@@ -260,8 +275,91 @@ func (repository *ConversationRepository) Delete(
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("delete conversation transaction: %w", err)
+		return nil, fmt.Errorf(
+			"delete conversation transaction: %w",
+			err,
+		)
 	}
 
-	return nil
+	return deletedMessages, nil
+}
+
+// DeleteMany 在同一事务中删除属于指定用户的多条对话及其消息。
+// 返回消息快照，供事务提交后清理关联的本地资源。
+func (repository *ConversationRepository) DeleteMany(
+	ctx context.Context,
+	ids []string,
+	userID string,
+) (int64, []models.Message, error) {
+	if len(ids) == 0 {
+		return 0, nil, nil
+	}
+
+	var deletedCount int64
+	var deletedMessages []models.Message
+
+	err := repository.db.WithContext(ctx).Transaction(
+		func(transaction *gorm.DB) error {
+			var ownedCount int64
+
+			// 必须确认所有 ID 都属于当前用户，避免只删除其中一部分。
+			if err := transaction.
+				Model(&models.Conversation{}).
+				Where("id IN ? AND user_id = ?", ids, userID).
+				Count(&ownedCount).
+				Error; err != nil {
+				return fmt.Errorf(
+					"count conversations before batch delete: %w",
+					err,
+				)
+			}
+
+			if ownedCount != int64(len(ids)) {
+				return gorm.ErrRecordNotFound
+			}
+
+			// 所有会话归属确认后，再保存即将删除消息的工具结果。
+			if err := transaction.
+				Select("tool_results").
+				Where("conversation_id IN ?", ids).
+				Find(&deletedMessages).
+				Error; err != nil {
+				return fmt.Errorf(
+					"list messages before batch delete: %w",
+					err,
+				)
+			}
+
+			if err := transaction.
+				Where("conversation_id IN ?", ids).
+				Delete(&models.Message{}).
+				Error; err != nil {
+				return fmt.Errorf(
+					"delete conversation messages in batch: %w",
+					err,
+				)
+			}
+
+			result := transaction.
+				Where("id IN ? AND user_id = ?", ids, userID).
+				Delete(&models.Conversation{})
+			if result.Error != nil {
+				return fmt.Errorf(
+					"delete conversations in batch: %w",
+					result.Error,
+				)
+			}
+
+			deletedCount = result.RowsAffected
+			return nil
+		},
+	)
+	if err != nil {
+		return 0, nil, fmt.Errorf(
+			"batch delete conversation transaction: %w",
+			err,
+		)
+	}
+
+	return deletedCount, deletedMessages, nil
 }

@@ -3,6 +3,7 @@ import type {
   ConversationListData,
   ConversationSummary,
   DeleteConversationData,
+  BatchDeleteConversationsData,
   UpdateConversationData,
   UpdateConversationPinnedData,
   PublicShareData,
@@ -66,6 +67,18 @@ export function deleteConversation(
     `/conversations/${encodeURIComponent(id)}`,
     {
       method: 'DELETE',
+    },
+  )
+}
+
+export function deleteConversationsBatch(
+  ids: string[],
+): Promise<BatchDeleteConversationsData> {
+  return apiRequest<BatchDeleteConversationsData>(
+    '/conversations/batch',
+    {
+      method: 'DELETE',
+      body: JSON.stringify({ ids }),
     },
   )
 }

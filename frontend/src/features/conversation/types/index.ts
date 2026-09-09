@@ -1,4 +1,7 @@
-import type { FileAttachment } from '@/features/chat/types'
+import type {
+  FileAttachment,
+  ToolStreamEvent,
+} from '@/features/chat/types'
 
 export type ConversationMessageRole =
   | 'user'
@@ -12,6 +15,7 @@ export interface ConversationMessage {
   content: string
   thinking?: string
   attachments?: FileAttachment[]
+  toolEvents?: ToolStreamEvent[]
   createdAt: string
 }
 
@@ -49,6 +53,10 @@ export interface DeleteConversationData {
   message: string
 }
 
+export interface BatchDeleteConversationsData {
+  deletedCount: number
+}
+
 export interface ShareConversationData {
   shareToken: string
   sharedAt: string
@@ -63,6 +71,8 @@ export interface PublicShareMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  thinking?: string
+  toolEvents?: ToolStreamEvent[]
   createdAt: string
 }
 

@@ -140,13 +140,15 @@ func (repository *MessageRepository) ListRecentByConversation(
 // DeleteFromUserMessage 删除指定用户消息以及它之后的全部消息。
 //
 // 查询目标消息时同时校验会话归属，并使用事务保证删除与会话更新时间同步。
+// 返回的消息快照用于事务提交后清理关联的本地资源。
 func (repository *MessageRepository) DeleteFromUserMessage(
 	ctx context.Context,
 	conversationID string,
 	userID string,
 	messageID string,
-) (int64, error) {
+) (int64, []models.Message, error) {
 	var deletedCount int64
+	var deletedMessages []models.Message
 
 	err := repository.db.WithContext(ctx).Transaction(
 		func(transaction *gorm.DB) error {
@@ -171,6 +173,19 @@ func (repository *MessageRepository) DeleteFromUserMessage(
 				Error; err != nil {
 				return fmt.Errorf(
 					"find truncation start message: %w",
+					err,
+				)
+			}
+
+			// 文件清理发生在事务提交之后，因此先保留工具结果快照。
+			if err := transaction.
+				Select("tool_results").
+				Where("conversation_id = ?", target.ConversationID).
+				Where("created_at >= ?", target.CreatedAt).
+				Find(&deletedMessages).
+				Error; err != nil {
+				return fmt.Errorf(
+					"list messages before truncation: %w",
 					err,
 				)
 			}
@@ -209,11 +224,11 @@ func (repository *MessageRepository) DeleteFromUserMessage(
 		},
 	)
 	if err != nil {
-		return 0, fmt.Errorf(
+		return 0, nil, fmt.Errorf(
 			"delete messages from user message: %w",
 			err,
 		)
 	}
 
-	return deletedCount, nil
+	return deletedCount, deletedMessages, nil
 }

@@ -5,6 +5,7 @@ import { ApiRequestError } from '@/lib/api/client'
 
 const selectedModelStorageKey = 'sy-chat:selected-model'
 const thinkingEnabledStorageKey = 'sy-chat:thinking-enabled'
+const webSearchEnabledStorageKey = 'sy-chat:web-search-enabled'
 
 function readStoredModelId(): string {
     try {
@@ -42,11 +43,34 @@ function writeStoredThinkingEnabled(enabled: boolean) {
     }
 }
 
+function readStoredWebSearchEnabled(): boolean {
+    try {
+        return window.localStorage.getItem(
+            webSearchEnabledStorageKey,
+        ) === 'true'
+    } catch {
+        return false
+    }
+}
+
+function writeStoredWebSearchEnabled(enabled: boolean) {
+    try {
+        window.localStorage.setItem(
+            webSearchEnabledStorageKey,
+            String(enabled),
+        )
+    } catch {
+        // 存储失败时仅影响跨页面持久化。
+    }
+}
+
 export const useModelStore = defineStore('model', {
     state: () => ({
         models: [] as AIModel[],
         selectedModelId: readStoredModelId(),
         thinkingEnabled: readStoredThinkingEnabled(),
+        webSearchEnabled: readStoredWebSearchEnabled(),
+        webSearchAvailable: false,
         isLoading: false,
         error: null as string | null
     }),
@@ -70,6 +94,9 @@ export const useModelStore = defineStore('model', {
             return state.thinkingEnabled &&
                 (selectedModel?.supportsThinking ?? false)
         },
+        effectiveWebSearchEnabled: (state) => {
+            return state.webSearchEnabled && state.webSearchAvailable
+        },
     },
 
     actions: {
@@ -81,6 +108,7 @@ export const useModelStore = defineStore('model', {
             try {
                 const data = await listModels()
                 this.models = data.models
+                this.webSearchAvailable = data.webSearchAvailable
 
                 // 刷新列表时保留有效选择，否则使用默认模型或首个模型。
                 const hasSelectedModel = this.models.some((model) => {
@@ -120,6 +148,10 @@ export const useModelStore = defineStore('model', {
             // 保存用户偏好，实际请求还会通过模型能力进行限制。
             this.thinkingEnabled = enabled
             writeStoredThinkingEnabled(enabled)
+        },
+        setWebSearchEnabled(enabled: boolean) {
+            this.webSearchEnabled = enabled
+            writeStoredWebSearchEnabled(enabled)
         },
     }
 })

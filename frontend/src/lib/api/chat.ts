@@ -1,4 +1,10 @@
-import type { ChatMessage, FileAttachment } from '@/features/chat/types'
+import type {
+    ChatMessage,
+    FileAttachment,
+    SearchSource,
+    ToolStreamEvent,
+    GeneratedImage,
+} from '@/features/chat/types'
 import type { ApiEnvelope } from './types';
 
 import { apiFetch, apiRequest, ApiRequestError } from "./client";
@@ -9,11 +15,20 @@ interface ChatRequest {
     message: string
     modelId: string
     enableThinking: boolean
+    enableWebSearch: boolean
     attachments: FileAttachment[]
 }
 
 interface ChatChunkData {
     content: string
+}
+
+interface ChatToolData {
+    toolCallId: string
+    name: string
+    status: 'running' | 'complete'
+    sources?: SearchSource[] | null
+    image?: GeneratedImage | null
 }
 
 interface ChatStreamError {
@@ -44,6 +59,7 @@ export function requestChatReply(
     modelId = '',
     enableThinking = false,
     attachments: FileAttachment[] = [],
+    enableWebSearch = false,
 ): Promise<ChatResponse> {
     return apiRequest<ChatResponse>('/chat', {
         method: 'POST',
@@ -53,6 +69,7 @@ export function requestChatReply(
             modelId,
             enableThinking,
             attachments,
+            enableWebSearch,
         } satisfies ChatRequest),
     })
 }
@@ -87,6 +104,8 @@ export async function requestChatStream(
     onThinking?: (content: string) => void,
     enableThinking = false,
     attachments: FileAttachment[] = [],
+    enableWebSearch = false,
+    onTool?: (event: ToolStreamEvent) => void
 ): Promise<ChatResponse> {
     const response = await apiFetch('/chat/stream', {
         method: 'POST',
@@ -97,6 +116,7 @@ export async function requestChatStream(
             modelId,
             enableThinking,
             attachments,
+            enableWebSearch,
         } satisfies ChatRequest),
     })
 
@@ -141,6 +161,46 @@ export async function requestChatStream(
             }
 
             onChunk(data.content)
+            return
+        }
+
+        if (event.event === 'tool') {
+            const data = parseEventData<ChatToolData>(
+                event.data,
+                requestId,
+            )
+
+            const validStatus =
+                data.status === 'running' ||
+                data.status === 'complete'
+
+            const validImage =
+                data.image == null ||
+                (
+                    typeof data.image.url === 'string' &&
+                    Number.isInteger(data.image.width) &&
+                    data.image.width > 0 &&
+                    Number.isInteger(data.image.height) &&
+                    data.image.height > 0
+                )
+
+            if (
+                typeof data.toolCallId !== 'string' ||
+                typeof data.name !== 'string' ||
+                !validStatus ||
+                (data.sources != null && !Array.isArray(data.sources) ||
+                    !validImage)
+            ) {
+                throw invalidStreamError(requestId)
+            }
+
+            onTool?.({
+                toolCallId: data.toolCallId,
+                name: data.name,
+                status: data.status,
+                sources: data.sources ?? [],
+                image: data.image ?? undefined,
+            })
             return
         }
 

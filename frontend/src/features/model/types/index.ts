@@ -11,4 +11,5 @@ export interface AIModel {
 export interface ModelListData {
     models: AIModel[]
     defaultModelId: string
+    webSearchAvailable: boolean
 }
