@@ -21,8 +21,11 @@ const (
 	defaultSiliconFlowBaseURL      = "https://api.siliconflow.cn/v1"
 	defaultSiliconFlowModel        = "Pro/zai-org/GLM-5.1"
 	defaultSiliconFlowImageModel   = "Kwai-Kolors/Kolors"
+	defaultSiliconFlowSTTModel     = "FunAudioLLM/SenseVoiceSmall"
+	defaultSiliconFlowTTSModel     = "FunAudioLLM/CosyVoice2-0.5B"
 	defaultAIRequestTimeout        = "60s"
 	defaultImageRequestTimeout     = "120s"
+	defaultAudioRequestTimeout     = "60s"
 	defaultTavilySearchURL         = "https://api.tavily.com/search"
 	defaultWebSearchTimeout        = "10s"
 	defaultGeneratedImageDir       = "storage/generated"
@@ -46,6 +49,9 @@ type Config struct {
 	AIRequestTimeout          time.Duration
 	SiliconFlowImageModel     string
 	ImageRequestTimeout       time.Duration
+	SiliconFlowSTTModel       string
+	SiliconFlowTTSModel       string
+	AudioRequestTimeout       time.Duration
 	GeneratedImageDir         string
 	GeneratedImageURLPrefix   string
 	TavilyAPIKey              string
@@ -149,6 +155,22 @@ func Load() (Config, error) {
 		)
 	}
 
+	audioRequestTimeout, err := time.ParseDuration(
+		getEnv("AUDIO_REQUEST_TIMEOUT", defaultAudioRequestTimeout),
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf(
+			"parse AUDIO_REQUEST_TIMEOUT: %w",
+			err,
+		)
+	}
+
+	if audioRequestTimeout <= 0 {
+		return Config{}, errors.New(
+			"AUDIO_REQUEST_TIMEOUT must be greater than zero",
+		)
+	}
+
 	siliconFlowAPIKey := strings.TrimSpace(
 		os.Getenv("SILICONFLOW_API_KEY"),
 	)
@@ -202,6 +224,15 @@ func Load() (Config, error) {
 			defaultSiliconFlowImageModel,
 		),
 		ImageRequestTimeout: imageRequestTimeout,
+		SiliconFlowSTTModel: getEnv(
+			"SILICONFLOW_STT_MODEL",
+			defaultSiliconFlowSTTModel,
+		),
+		SiliconFlowTTSModel: getEnv(
+			"SILICONFLOW_TTS_MODEL",
+			defaultSiliconFlowTTSModel,
+		),
+		AudioRequestTimeout: audioRequestTimeout,
 		GeneratedImageDir: getEnv(
 			"GENERATED_IMAGE_DIR",
 			defaultGeneratedImageDir,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useClipboard } from '@/composables/useClipboard'
 import {
     Bot,
@@ -8,6 +8,9 @@ import {
     CircleAlert,
     CircleStop,
     FileText,
+    LoaderCircle,
+    Pause,
+    Volume2,
     RotateCcw,
     Pencil,
 } from '@lucide/vue'
@@ -19,6 +22,8 @@ import SearchSources from './SearchSources.vue'
 import ImageGenerationStatus from './ImageGenerationStatus.vue'
 import GeneratedImageResult from './GeneratedImageResult.vue'
 import MarkdownContent from './MarkdownContent.vue'
+import { voiceOptions } from '@/features/voice/constants/voices'
+import { useSpeechPlayer } from '@/features/voice/composables/useSpeechPlayer'
 
 const props = withDefaults(
     defineProps<{
@@ -92,6 +97,69 @@ const { isCopying, copyFeedback, copyText } = useClipboard()
 function copyMessage() {
     return copyText(props.message.content)
 }
+
+const {
+    selectedVoice,
+    generatingMessageId,
+    playingMessageId,
+    activeMessageId,
+    errorMessageId,
+    playbackError,
+    setSelectedVoice,
+    toggleSpeech,
+    stopSpeech,
+} = useSpeechPlayer()
+
+const isGeneratingSpeech = computed(
+    () => generatingMessageId.value === props.message.id,
+)
+
+const isPlayingSpeech = computed(
+    () => playingMessageId.value === props.message.id,
+)
+
+const hasPreparedSpeech = computed(
+    () => activeMessageId.value === props.message.id,
+)
+
+const speechError = computed(() => {
+    return errorMessageId.value === props.message.id
+        ? playbackError.value
+        : ''
+})
+
+const speechButtonTitle = computed(() => {
+    if (isGeneratingSpeech.value) {
+        return '正在生成语音'
+    }
+
+    if (isPlayingSpeech.value) {
+        return '暂停朗读'
+    }
+
+    return hasPreparedSpeech.value ? '继续朗读' : '朗读消息'
+})
+
+function handleVoiceChange(event: Event) {
+    const select = event.target as HTMLSelectElement
+    setSelectedVoice(select.value)
+}
+
+function handleSpeech() {
+    void toggleSpeech(
+        props.message.id,
+        props.message.content,
+    )
+}
+
+onBeforeUnmount(() => {
+    if (
+        activeMessageId.value === props.message.id ||
+        generatingMessageId.value === props.message.id
+    ) {
+        stopSpeech()
+    }
+})
 </script>
 
 <template>
@@ -152,6 +220,35 @@ function copyMessage() {
                     <Copy v-else :size="14" />
                 </button>
 
+                <button v-if="!isUser" type="button"
+                    class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-wait disabled:opacity-50 dark:hover:bg-neutral-800"
+                    :disabled="isGeneratingSpeech" :title="speechButtonTitle" :aria-label="speechButtonTitle"
+                    @click="handleSpeech">
+                    <LoaderCircle v-if="isGeneratingSpeech" :size="14" class="animate-spin" aria-hidden="true" />
+                    <Pause v-else-if="isPlayingSpeech" :size="14" aria-hidden="true" />
+                    <Volume2 v-else :size="14" aria-hidden="true" />
+                </button>
+
+                <select v-if="!isUser" :value="selectedVoice"
+                    class="h-7 max-w-24 rounded-md border border-transparent bg-transparent px-1 text-xs text-neutral-500 outline-none hover:bg-neutral-100 focus:border-neutral-300 dark:hover:bg-neutral-800"
+                    title="选择朗读音色" aria-label="选择朗读音色" @change="handleVoiceChange">
+                    <optgroup label="女声">
+                        <option v-for="voice in voiceOptions.filter(
+                            (item) => item.gender === 'female',
+                        )" :key="voice.id" :value="voice.id">
+                            {{ voice.label }}
+                        </option>
+                    </optgroup>
+
+                    <optgroup label="男声">
+                        <option v-for="voice in voiceOptions.filter(
+                            (item) => item.gender === 'male',
+                        )" :key="voice.id" :value="voice.id">
+                            {{ voice.label }}
+                        </option>
+                    </optgroup>
+                </select>
+
                 <button v-if="canEditPersistedUser" type="button"
                     class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:opacity-50 dark:hover:bg-neutral-800"
                     :disabled="retryDisabled" title="编辑消息" aria-label="编辑用户消息" @click="startEditing">
@@ -163,8 +260,8 @@ function copyMessage() {
                     :disabled="retryDisabled" title="重新生成" aria-label="重新生成 AI 回复" @click="emit('retry', message)">
                     <RotateCcw :size="14" aria-hidden="true" />
                 </button>
-                <span class="text-xs text-neutral-500" role="status">
-                    {{ copyFeedback }}
+                <span v-if="speechError" class="text-xs text-red-600 dark:text-red-400" role="alert">
+                    {{ speechError }}
                 </span>
             </div>
 

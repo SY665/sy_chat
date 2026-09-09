@@ -16,6 +16,7 @@ import (
 	conversationservice "sy_chat/internal/services/conversation"
 	"sy_chat/internal/services/imagegen"
 	toolservice "sy_chat/internal/services/tools"
+	voiceservice "sy_chat/internal/services/voice"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -188,6 +189,15 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 		cfg.CookieSecure,
 	)
 
+	voiceClient := voiceservice.NewSiliconFlowClient(
+		cfg.SiliconFlowAPIKey,
+		cfg.SiliconFlowBaseURL,
+		cfg.SiliconFlowSTTModel,
+		cfg.SiliconFlowTTSModel,
+		cfg.AudioRequestTimeout,
+	)
+	voiceHandler := handlers.NewVoiceHandler(voiceClient)
+
 	conversationRepository := repositories.NewConversationRepository(db)
 	conversationService := conversationservice.NewService(
 		conversationRepository,
@@ -214,6 +224,18 @@ func RouterInit(cfg config.Config, db *gorm.DB) *gin.Engine {
 			"/attachments",
 			middleware.RequireAuth(tokenManager),
 			handlers.UploadAttachment,
+		)
+
+		api.POST(
+			"/speech",
+			middleware.RequireAuth(tokenManager),
+			voiceHandler.SpeechToText,
+		)
+
+		api.POST(
+			"/tts",
+			middleware.RequireAuth(tokenManager),
+			voiceHandler.TextToSpeech,
 		)
 
 		api.POST(

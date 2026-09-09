@@ -289,6 +289,20 @@ definitions:
       url:
         type: string
     type: object
+  handlers.SpeechData:
+    properties:
+      text:
+        type: string
+    type: object
+  handlers.TextToSpeechRequest:
+    properties:
+      speed:
+        type: number
+      text:
+        type: string
+      voice:
+        type: string
+    type: object
   handlers.ToolEventData:
     properties:
       image:
@@ -1112,6 +1126,102 @@ paths:
       summary: 获取公开分享
       tags:
       - Shares
+  /speech:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 接收不超过 10 MB 的音频并返回识别文本。
+      parameters:
+      - description: 录音文件
+        in: formData
+        name: audio
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Envelope'
+            - properties:
+                data:
+                  $ref: '#/definitions/handlers.SpeechData'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/response.Envelope'
+      summary: 将录音转换为文字
+      tags:
+      - Voice
+  /tts:
+    post:
+      consumes:
+      - application/json
+      description: 使用指定的系统音色生成 MP3 音频。
+      parameters:
+      - description: 朗读参数
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.TextToSpeechRequest'
+      produces:
+      - audio/mpeg
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/response.Envelope'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/response.Envelope'
+      summary: 将文本转换为语音
+      tags:
+      - Voice
 schemes:
 - http
 swagger: "2.0"

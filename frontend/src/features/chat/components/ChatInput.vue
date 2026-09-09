@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
     FileText,
     FileUp,
     LoaderCircle,
+    Mic,
     Send,
     Square,
     X,
@@ -11,6 +12,8 @@ import {
 
 import type { FileAttachment } from '../types'
 import { uploadAttachment } from '@/lib/api/attachment'
+import { transcribeSpeech } from '@/lib/api/voice'
+import { useAudioRecorder } from '@/features/voice/composables/useAudioRecorder'
 
 const emit = defineEmits<{
     send: [content: string, attachments: FileAttachment[]]
@@ -35,17 +38,43 @@ const isUploading = ref(false)
 const isDragging = ref(false)
 const uploadError = ref<string | null>(null)
 
+const isTranscribing = ref(false)
+const voiceError = ref<string | null>(null)
+
+const {
+    isRecording,
+    audioBlob,
+    startRecording,
+    stopRecording,
+    cancelRecording,
+    clearAudio,
+} = useAudioRecorder()
+
+let transcriptionController: AbortController | null = null
+
 let dragDepth = 0
 
 // 标记中文输入法是否正在选字，避免按 Enter 时误发送。
 const isComposing = ref(false)
+
+const canRecord = computed(() => {
+    return (
+        !props.disabled &&
+        !props.isGenerating &&
+        !isUploading.value &&
+        !isTranscribing.value
+    )
+})
 
 const canAddFile = computed(() => {
     return (
         !props.disabled &&
         !props.isGenerating &&
         !isUploading.value &&
+        !isRecording.value &&
+        !isTranscribing.value &&
         uploadedFiles.value.length < 5
+
     )
 })
 
@@ -54,6 +83,8 @@ const canSend = computed(() => {
         !props.disabled &&
         !props.isGenerating &&
         !isUploading.value &&
+        !isRecording.value &&
+        !isTranscribing.value &&
         content.value.trim().length > 0
     )
 })
@@ -188,6 +219,82 @@ function handleEnter() {
         submitMessage()
     }
 }
+
+async function handleRecordButton() {
+    voiceError.value = null
+
+    if (isRecording.value) {
+        stopRecording()
+        return
+    }
+
+    if (!canRecord.value) {
+        return
+    }
+
+    try {
+        await startRecording()
+    } catch (error) {
+        voiceError.value =
+            error instanceof Error
+                ? error.message
+                : '无法访问麦克风，请检查浏览器权限'
+    }
+}
+
+function handleCancelRecording() {
+    cancelRecording()
+    voiceError.value = null
+}
+
+watch(audioBlob, async (blob) => {
+    if (!blob) {
+        return
+    }
+
+    transcriptionController?.abort()
+    const controller = new AbortController()
+    transcriptionController = controller
+    isTranscribing.value = true
+    voiceError.value = null
+
+    try {
+        const result = await transcribeSpeech(
+            blob,
+            controller.signal,
+        )
+        const transcript = result.text.trim()
+
+        if (transcript) {
+            const currentContent = content.value.trimEnd()
+            content.value = currentContent
+                ? `${currentContent} ${transcript}`
+                : transcript
+        }
+    } catch (error) {
+        if (
+            !(error instanceof DOMException) ||
+            error.name !== 'AbortError'
+        ) {
+            voiceError.value =
+                error instanceof Error
+                    ? error.message
+                    : '语音识别失败，请重试'
+        }
+    } finally {
+        if (transcriptionController === controller) {
+            transcriptionController = null
+            isTranscribing.value = false
+        }
+
+        clearAudio()
+    }
+})
+
+onBeforeUnmount(() => {
+    transcriptionController?.abort()
+})
+
 </script>
 
 <template>
@@ -232,6 +339,30 @@ function handleEnter() {
                 {{ uploadError }}
             </p>
 
+            <div v-if="isRecording"
+                class="mb-2 flex items-center justify-between rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
+                <div class="flex items-center gap-2">
+                    <span class="h-2 w-2 animate-pulse rounded-full bg-red-500"></span>
+                    <span>正在录音，点击麦克风按钮完成</span>
+                </div>
+
+                <button type="button"
+                    class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-red-100 dark:hover:bg-red-900"
+                    title="取消录音" aria-label="取消录音" @click="handleCancelRecording">
+                    <X :size="15" />
+                </button>
+            </div>
+
+            <div v-else-if="isTranscribing" class="mb-2 flex items-center gap-2 px-2 py-1 text-sm text-neutral-500"
+                role="status">
+                <LoaderCircle :size="16" class="animate-spin" />
+                <span>正在将语音转换为文字...</span>
+            </div>
+
+            <p v-if="voiceError" class="mb-2 px-2 text-xs text-red-600 dark:text-red-400" role="alert">
+                {{ voiceError }}
+            </p>
+
             <div class="flex min-h-10 items-end gap-2">
                 <input ref="fileInput" type="file" class="hidden" accept=".txt,.md,text/plain,text/markdown" multiple
                     @change="handleFileChange" />
@@ -246,11 +377,26 @@ function handleEnter() {
                     <FileUp v-else :size="17" />
                 </button>
 
+                <button type="button"
+                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-neutral-600 hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-300 dark:hover:bg-neutral-700"
+                    :class="isRecording
+                        ? 'bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-300'
+                        : ''
+                        " :disabled="!isRecording && !canRecord" :title="isRecording ? '停止录音' : '语音输入'"
+                    :aria-label="isRecording ? '停止录音' : '开始语音输入'" @click="handleRecordButton">
+                    <Square v-if="isRecording" :size="15" fill="currentColor" />
+                    <Mic v-else :size="17" />
+                </button>
+
                 <textarea v-model="content" rows="1"
                     class="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-neutral-500"
-                    :disabled="disabled || isGenerating" :placeholder="isGenerating
-                        ? 'SY Chat 正在回复...'
-                        : '给 SY Chat 发送消息'
+                    :disabled="disabled || isGenerating || isRecording || isTranscribing" :placeholder="isRecording
+                        ? '正在录音...'
+                        : isTranscribing
+                            ? '正在识别语音...'
+                            : isGenerating
+                                ? 'SY Chat 正在回复...'
+                                : '给 SY Chat 发送消息'
                         " @compositionstart="isComposing = true" @compositionend="isComposing = false"
                     @keydown.enter.exact.prevent="handleEnter" />
 
